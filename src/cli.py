@@ -14,7 +14,7 @@ def print_banner():
     ╔═══════════════════════════════════════════════════════════╗
     ║                                                           ║
     ║        SECURE FILE TRANSFER SYSTEM                        ║
-    ║        AES-256 + XChaCha20 Hybrid Encryption            ║
+    ║        AES-256 + XChaCha20 Hybrid Encryption              ║
     ║                                                           ║
     ║        Central University of Jammu                        ║
     ║        B.Tech CSE (Cyber Security)                        ║
