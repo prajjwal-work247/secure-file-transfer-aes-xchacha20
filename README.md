@@ -17,7 +17,7 @@ Central University of Jammu
 - Hybrid encryption model addressing nonce reuse vulnerabilities
 
 ## Installation
-bash
+```bash
 # Clone repository
 git clone https://github.com/YOUR_USERNAME/secure-file-transfer-aes-xchacha20.git
 cd secure-file-transfer-aes-xchacha20
@@ -30,27 +30,27 @@ venv\Scripts\activate  # Windows
 
 # Install dependencies
 pip install -r requirements.txt
-
+```
 
 ## Usage
 
 ### Encrypt a File
-bash
+```bash
 python src/cli.py encrypt -f document.pdf
-
+```
 
 ### Decrypt a File
-bash
+```bash
 python src/cli.py decrypt -m encrypted/document.pdf.meta
-
+```
 
 ### Show System Information
-bash
+```bash
 python src/cli.py info
-
+```
 
 ## Project Structure
-
+```
 ├── src/
 │   ├── aes_encryption.py       # AES-256 encryption module
 │   ├── xchacha20_encryption.py # XChaCha20 key encryption
@@ -60,11 +60,12 @@ python src/cli.py info
 ├── tests/                       # Test files
 ├── requirements.txt             # Python dependencies
 └── README.md                    # This file
-
+```
 
 ## Testing
 All modules include built-in tests:
-bash
+```bash
 python src/aes_encryption.py
 python src/xchacha20_encryption.py
 python src/hybrid_encryption.py
+```
