@@ -19,7 +19,7 @@ Central University of Jammu
 ## Installation
 ```bash
 # Clone repository
-git clone https://github.com/YOUR_USERNAME/secure-file-transfer-aes-xchacha20.git
+git clone https://github.com/prajjwal-work247/secure-file-transfer-aes-xchacha20.git
 cd secure-file-transfer-aes-xchacha20
 
 # Create virtual environment
