@@ -1,0 +1,59 @@
+{
+  "test_date": "2025-11-06 13:35:04",
+  "results": [
+    {
+      "file_size_mb": 1,
+      "encryption_time": 0.005539655685424805,
+      "encryption_throughput": 180.51663438777706,
+      "decryption_time": 0.004311800003051758,
+      "decryption_throughput": 231.9217030688416,
+      "total_time": 0.009851455688476562,
+      "integrity_verified": true
+    },
+    {
+      "file_size_mb": 5,
+      "encryption_time": 0.018561363220214844,
+      "encryption_throughput": 269.3767661717104,
+      "decryption_time": 0.018124818801879883,
+      "decryption_throughput": 275.864826824167,
+      "total_time": 0.03668618202209473,
+      "integrity_verified": true
+    },
+    {
+      "file_size_mb": 10,
+      "encryption_time": 0.03626656532287598,
+      "encryption_throughput": 275.73606463615863,
+      "decryption_time": 0.035401344299316406,
+      "decryption_throughput": 282.4751488375852,
+      "total_time": 0.07166790962219238,
+      "integrity_verified": true
+    },
+    {
+      "file_size_mb": 25,
+      "encryption_time": 0.09897398948669434,
+      "encryption_throughput": 252.59161654144395,
+      "decryption_time": 0.10302042961120605,
+      "decryption_throughput": 242.67031397897242,
+      "total_time": 0.2019944190979004,
+      "integrity_verified": true
+    },
+    {
+      "file_size_mb": 50,
+      "encryption_time": 0.16989970207214355,
+      "encryption_throughput": 294.29127532412497,
+      "decryption_time": 0.1945202350616455,
+      "decryption_throughput": 257.04266697063406,
+      "total_time": 0.36441993713378906,
+      "integrity_verified": true
+    },
+    {
+      "file_size_mb": 100,
+      "encryption_time": 0.3444488048553467,
+      "encryption_throughput": 290.3189054233926,
+      "decryption_time": 0.3928227424621582,
+      "decryption_throughput": 254.56774567891344,
+      "total_time": 0.7372715473175049,
+      "integrity_verified": true
+    }
+  ]
+}
