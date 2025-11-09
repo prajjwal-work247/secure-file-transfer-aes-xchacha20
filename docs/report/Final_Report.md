@@ -1844,4 +1844,2397 @@ For larger teams or longer timelines, more formal agile practices (sprint planni
 
 ---
 
+# CHAPTER 3: SYSTEM DESIGN
 
+## 3.1 Product Perspective
+
+The hybrid encryption system exists as a standalone command-line application designed to operate independently without external service dependencies. This section positions the system within the broader context of file encryption tools and cryptographic software ecosystems.
+
+**System Context and Positioning**
+
+The system operates at the application layer, interfacing with:
+
+**Operating System Layer:**
+- **File System:** Read/write operations for accessing files, creating directories, managing paths
+- **Entropy Source:** OS-provided secure random number generation (/dev/urandom on Linux, CryptGenRandom on Windows)
+- **Process Management:** Memory allocation, process isolation, standard input/output streams
+- **Security Features:** File permissions, access controls (inherited from OS)
+
+**Runtime Environment:**
+- **Python Interpreter:** Executes application code, manages memory, provides standard library
+- **Virtual Environment:** Isolated Python package environment preventing system-wide conflicts
+- **Shell/Terminal:** Command-line interface for user interaction
+
+**External Libraries:**
+- **PyCryptodome:** Provides AES algorithm implementation with multiple modes (GCM, CBC, CTR)
+- **PyNaCl:** Wraps libsodium C library, provides XChaCha20-Poly1305 through SecretBox API
+- **Matplotlib:** Generates performance visualization graphs (optional dependency)
+
+**System Independence Characteristics**
+
+Unlike cloud-based encryption services or networked key management systems, this system:
+
+**Local Operation:**
+- Processes all data on local machine without network transmission
+- No external authentication servers or key management services
+- No cloud storage integration or remote API calls
+- Functions in air-gapped environments (offline operation)
+
+**User Control:**
+- Users maintain complete control over cryptographic material
+- No third-party key escrow or recovery mechanisms
+- Encrypted files stored locally under user's file system permissions
+- No telemetry, analytics, or usage reporting
+
+**No External Dependencies for Core Functionality:**
+- Encryption/decryption operates without internet connectivity
+- No licensing servers or activation mechanisms
+- No mandatory updates or version checks
+- Performance testing and visualization only components requiring matplotlib
+
+**Relationship to Encryption Ecosystem**
+
+**Position Among File Encryption Tools:**
+
+```
+┌─────────────────────────────────────────┐
+│   Enterprise Solutions                   │
+│   (Complex, PKI, Multi-user)            │
+│   - Commercial encryption platforms      │
+│   - Enterprise key management           │
+└─────────────────┬───────────────────────┘
+                  │
+                  │ (More Complexity)
+                  │
+┌─────────────────▼───────────────────────┐
+│   THIS SYSTEM                           │ ◄── Project Position
+│   (Hybrid symmetric, CLI, Automated)    │
+│   - Practical security                  │
+│   - Operational resilience              │
+└─────────────────┬───────────────────────┘
+                  │
+                  │ (Less Complexity)
+                  │
+┌─────────────────▼───────────────────────┐
+│   Simple Tools                          │
+│   (Single algorithm, Manual)            │
+│   - Basic AES encryption utilities      │
+│   - Simple XOR ciphers                  │
+└─────────────────────────────────────────┘
+```
+
+The system occupies a middle ground:
+- **More sophisticated** than simple single-algorithm utilities (dual-layer security, automated key management)
+- **Less complex** than enterprise solutions (no PKI infrastructure, no multi-user coordination, no distributed key management)
+- **Focuses on** practical individual/small team use cases with strong security properties
+
+**Design Philosophy and Constraints**
+
+**Minimalism:** Include only essential features; avoid feature bloat that increases attack surface and complexity
+
+**Transparency:** Open-source implementation enables security auditing; no proprietary protocols or hidden functionality
+
+**Standards-Based:** Use well-established algorithms (AES from NIST, ChaCha20 from IETF); avoid novel or experimental cryptography
+
+**Library-Reliant:** Delegate cryptographic operations to audited, maintained libraries; never implement custom cryptographic primitives
+
+**User-Centric:** Design for technical users (developers, administrators) who understand command-line interfaces but shouldn't need deep cryptographic expertise
+
+**Future Integration Possibilities**
+
+While currently standalone, the modular architecture supports potential future integration:
+
+**Network Layer:** Could add socket-based file transfer (sender encrypts, receiver decrypts)
+
+**GUI Wrapper:** Existing modules could be wrapped with graphical interface (PyQt, Tkinter) without changing core logic
+
+**Cloud Integration:** Modules could be integrated with cloud storage APIs (encrypt before upload, decrypt after download)
+
+**Automated Workflows:** CLI design enables integration into backup scripts, data pipelines, CI/CD systems
+
+However, current scope deliberately limited to local encryption to maintain simplicity and security focus.
+
+## 3.2 Product Functions
+
+This section enumerates the major functions the system provides, describing inputs, processing logic, outputs, and relationships between functions.
+
+**Function 1: Secure File Encryption (Hybrid Approach)**
+
+**Function ID:** F1  
+**Priority:** Critical (Core functionality)
+
+**Description:** Encrypt files using two-layer hybrid approach combining AES-256-GCM for content and XChaCha20-Poly1305 for key protection.
+
+**Input:**
+- File path (string): Path to file requiring encryption
+- Output directory (optional string): Destination for encrypted files (default: "encrypted")
+- Confirmation flag (optional boolean): Skip user confirmation if set
+
+**Processing Steps:**
+1. **Validation:** Check file exists, is readable, size > 0 bytes
+2. **Directory Creation:** Create output directory if not exists
+3. **AES Key Generation:** Generate 256-bit random key using `os.urandom(32)`
+4. **AES Nonce Generation:** Generate 128-bit random nonce using `os.urandom(16)`
+5. **File Encryption:** Read file content, encrypt with AES-256-GCM, compute authentication tag
+6. **Write Encrypted File:** Save nonce (16B) + tag (16B) + ciphertext to .enc file
+7. **Master Key Generation:** Generate 256-bit XChaCha20 master key
+8. **Key Encryption:** Encrypt AES key with XChaCha20-Poly1305 (automatically generates 192-bit nonce)
+9. **Write Encrypted Key:** Save encrypted key package (72 bytes total) to .key file
+10. **Metadata Creation:** Generate JSON with all decryption information
+11. **Write Metadata:** Save JSON to .meta file
+12. **Status Display:** Output success message with file locations
+
+**Output:**
+- Encrypted file (.enc): Original file size + 32 bytes (nonce + tag)
+- Encrypted key file (.key): Fixed 72 bytes (nonce + encrypted key + tag)
+- Metadata file (.meta): JSON with paths, master key, original filename, file size
+- Console messages: Progress indicators and success confirmation
+
+**Success Criteria:**
+- All three files created successfully
+- File permissions appropriate (readable by owner)
+- Metadata JSON valid and parseable
+
+**Error Conditions:**
+- File not found → Display error, suggest checking path
+- Permission denied → Display error, suggest checking permissions
+- Insufficient disk space → Display error, suggest freeing space
+- Encryption failure → Display error with library exception details
+
+**Function 2: Secure File Decryption with Integrity Verification**
+
+**Function ID:** F2  
+**Priority:** Critical (Core functionality)
+
+**Description:** Decrypt files using metadata reference, verifying authentication at both layers before outputting plaintext.
+
+**Input:**
+- Metadata file path (string): Path to .meta file from encryption operation
+- Output directory (optional string): Destination for decrypted file (default: "decrypted")
+
+**Processing Steps:**
+1. **Load Metadata:** Read and parse JSON metadata file
+2. **Validate Metadata:** Check required fields present (original_filename, encrypted_file, key_file, master_key)
+3. **Load Encrypted Key:** Read 72-byte encrypted key file
+4. **Extract Master Key:** Retrieve XChaCha20 master key from metadata (hex decode)
+5. **Decrypt Key:** Use XChaCha20 master key to decrypt AES key
+6. **Verify Key Tag:** Poly1305 authentication tag verification (constant-time comparison)
+7. **Abort if Key Invalid:** If tag verification fails, display error and exit WITHOUT proceeding
+8. **Load Encrypted File:** Read encrypted file (nonce + tag + ciphertext)
+9. **Extract Components:** Separate nonce (16B), tag (16B), ciphertext (remainder)
+10. **Decrypt File:** Use recovered AES key with extracted nonce to decrypt ciphertext
+11. **Verify File Tag:** GCM authentication tag verification
+12. **Abort if File Invalid:** If tag verification fails, display error and exit WITHOUT saving plaintext
+13. **Write Decrypted File:** Only if both tags valid, save plaintext with original filename
+14. **Status Display:** Output success message with file location
+
+**Output:**
+- Decrypted file: Exact copy of original (bitwise identical)
+- Console messages: Progress indicators and success/failure notification
+
+**Success Criteria:**
+- Both authentication tags verify successfully
+- Decrypted file matches original exactly (SHA-256 hash comparison in tests)
+- Original filename restored
+
+**Error Conditions:**
+- Metadata not found → Display error, check file path
+- Invalid JSON format → Display error, metadata may be corrupted
+- Key authentication failure → Display "Key tampering detected", DO NOT output plaintext
+- File authentication failure → Display "File tampering detected", DO NOT output plaintext
+- Missing encrypted files → Display error with missing file path
+
+**Critical Security Property:** Function NEVER outputs unauthenticated data. If either authentication tag fails, operation aborts immediately without creating output file.
+
+**Function 3: Automated Cryptographic Key Generation**
+
+**Function ID:** F3  
+**Priority:** High (Security requirement)
+
+**Description:** Generate cryptographically secure random keys without user intervention.
+
+**Input:** None (automatic operation, no user-provided data)
+
+**Processing:**
+1. **Access OS RNG:** Use `os.urandom()` or Python `secrets` module
+2. **Generate Random Bytes:** Request specified number of bytes (32 for 256-bit keys)
+3. **Return Key Material:** Provide key as bytes object
+
+**Output:**
+- 256-bit (32-byte) random key with sufficient entropy
+- No disk storage (key exists only in memory)
+
+**Entropy Source:**
+- Linux: /dev/urandom (draws from kernel entropy pool)
+- Windows: CryptGenRandom (uses CSPRNG)
+- macOS: /dev/urandom (similar to Linux)
+
+**Security Properties:**
+- Keys unpredictable (full 256-bit security)
+- No patterns or correlations between generated keys
+- Sufficient entropy even on systems with limited entropy sources (modern OS maintain entropy pools)
+
+**Success Criteria:**
+- Key generation completes without error
+- Generated key has full 256-bit randomness
+
+**Error Conditions:**
+- OS RNG unavailable (should never occur on supported platforms)
+- Insufficient entropy (extremely rare on modern systems; OS blocks until sufficient entropy available)
+
+**Function 4: Metadata Management**
+
+**Function ID:** F4  
+**Priority:** High (Required for usability)
+
+**Description:** Create, read, and validate metadata files containing decryption information.
+
+**Subfunction 4a: Metadata Creation**
+
+**Input:**
+- Original filename
+- Encrypted file path
+- Encrypted key file path
+- Master key (bytes)
+- Original file size
+
+**Processing:**
+1. Create dictionary with required fields
+2. Convert master key to hex string (for JSON compatibility)
+3. Format as JSON with indentation (human-readable)
+4. Write to file with .meta extension
+
+**Output:**
+- JSON metadata file
+
+**Subfunction 4b: Metadata Loading**
+
+**Input:**
+- Metadata file path
+
+**Processing:**
+1. Read file contents
+2. Parse JSON (validate syntax)
+3. Validate required fields present
+4. Validate master key is valid hex string (64 characters)
+5. Return metadata dictionary
+
+**Output:**
+- Parsed metadata as Python dictionary
+
+**Error Handling:**
+- JSON parse error → Display "Invalid metadata format"
+- Missing fields → Display "Incomplete metadata"
+- Invalid hex encoding → Display "Corrupted master key"
+
+**Function 5: Command-Line Interface Operations**
+
+**Function ID:** F5  
+**Priority:** Medium (Usability)
+
+**Description:** Provide user-facing commands with argument parsing and validation.
+
+**Subfunction 5a: Encrypt Command**
+
+**Syntax:** `python cli.py encrypt -f FILE [-o OUTPUT] [-y] [-s]`
+
+**Arguments:**
+- `-f, --file` (required): File to encrypt
+- `-o, --output` (optional): Output directory (default: "encrypted")
+- `-y, --yes` (optional): Skip confirmation prompt
+- `-s, --save-key` (optional): Save master key to separate backup file
+
+**Processing:**
+1. Parse command-line arguments
+2. Validate file exists
+3. Display file info (name, size)
+4. Prompt for confirmation unless -y flag set
+5. Call encryption function (F1)
+6. Display results
+
+**Subfunction 5b: Decrypt Command**
+
+**Syntax:** `python cli.py decrypt -m METADATA [-o OUTPUT]`
+
+**Arguments:**
+- `-m, --metadata` (required): Metadata file path
+- `-o, --output` (optional): Output directory (default: "decrypted")
+
+**Processing:**
+1. Parse arguments
+2. Validate metadata file exists
+3. Call decryption function (F2)
+4. Display results
+
+**Subfunction 5c: Info Command**
+
+**Syntax:** `python cli.py info`
+
+**Processing:**
+1. Display system information banner
+2. List encryption methods used
+3. Explain key features
+4. Show security benefits
+5. Provide usage examples
+
+**Output:** Formatted informational text to console
+
+**Function 6: Performance Benchmarking**
+
+**Function ID:** F6  
+**Priority:** Low (Evaluation/Documentation)
+
+**Description:** Measure encryption and decryption performance across various file sizes.
+
+**Input:**
+- List of file sizes to test (e.g., [1, 5, 10, 25, 50, 100] MB)
+
+**Processing:**
+1. For each file size:
+   a. Generate test file with random data
+   b. Measure encryption time (start to finish)
+   c. Measure decryption time
+   d. Calculate throughput (file_size / time)
+   e. Verify integrity (compare hashes)
+   f. Record results
+2. Save results as JSON
+3. Generate performance graphs (if matplotlib available)
+
+**Output:**
+- JSON file with performance data
+- PNG graphs (6 visualizations)
+- Console summary table
+
+**Metrics Measured:**
+- Encryption time (seconds)
+- Decryption time (seconds)
+- Throughput (MB/s)
+- Total processing time
+- Memory usage (if monitored)
+
+**Function Relationships and Dependencies**
+
+```
+┌────────────────────────────────────────────┐
+│         CLI Interface (F5)                 │
+│  Entry point for all user interactions    │
+└────────┬───────────────────────────────────┘
+         │
+         ├──────────► encrypt command
+         │              │
+         │              ▼
+         │         ┌────────────────┐
+         │         │  F1: Encrypt   │
+         │         └───┬────────┬───┘
+         │             │        │
+         │             ▼        ▼
+         │         ┌────┐    ┌────┐
+         │         │ F3 │    │ F4 │
+         │         │Key │    │Meta│
+         │         │Gen │    │Mgmt│
+         │         └────┘    └────┘
+         │
+         ├──────────► decrypt command
+         │              │
+         │              ▼
+         │         ┌────────────────┐
+         │         │  F2: Decrypt   │
+         │         └───┬────────────┘
+         │             │
+         │             ▼
+         │         ┌────────┐
+         │         │   F4   │
+         │         │  Meta  │
+         │         │  Load  │
+         │         └────────┘
+         │
+         └──────────► info command
+                       │
+                       ▼
+                    (Display info)
+```
+
+**Summary of Product Functions:**
+
+The system provides six major functions operating in coordinated fashion to deliver secure file encryption with usability and performance. Core functions (F1, F2) implement cryptographic operations; supporting functions (F3, F4, F5) provide automation, usability, and validation; evaluation function (F6) measures and documents performance characteristics.
+
+## 3.3 User Characteristics
+
+Understanding target users informs design decisions regarding interface complexity, automation level, documentation style, and feature priorities.
+
+**Primary User Profile: Technical Professionals**
+
+**Demographics:**
+- **Roles:** Software developers, system administrators, DevOps engineers, security researchers, IT professionals
+- **Education:** Bachelor's degree in computer science, information technology, or related technical field; or equivalent practical experience
+- **Age Range:** 22-45 (typical for technical professional roles)
+- **Geographic Distribution:** Global (cross-platform tool)
+
+**Technical Proficiency:**
+- **Command-Line Comfort:** High; daily use of terminal/shell for professional tasks
+- **Programming Experience:** Familiar with at least one programming language; understands concepts like variables, functions, file I/O
+- **File System Knowledge:** Understands directory structures, absolute/relative paths, file permissions
+- **Security Awareness:** Basic understanding of encryption concepts (confidentiality, integrity, authentication); may not be cryptographic experts
+- **Operating Systems:** Proficient in Linux, Windows, or macOS
+
+**Behavioral Characteristics:**
+- **Problem-Solving Approach:** Analytical; reads documentation; troubleshoots errors systematically
+- **Tool Preferences:** Favors open-source tools for transparency and customization
+- **Automation Mindset:** Seeks scriptable, automatable solutions for recurring tasks
+- **Security Consciousness:** Prioritizes security over convenience; willing to invest time learning secure practices
+
+**Usage Context:**
+- **Frequency:** Varies from daily (developers encrypting sensitive code) to weekly (administrators encrypting backups)
+- **File Types:** Source code, configuration files, databases, backups, personal documents, research data
+- **File Sizes:** Typically 1MB-100MB; occasionally larger (multi-GB database backups)
+- **Environment:** Often air-gapped or offline environments for security; sometimes in cloud/virtualized environments
+
+**Needs and Expectations:**
+- **Strong Security:** Prioritize cryptographic strength over ease of use
+- **Transparency:** Desire to understand what tool does; open-source prerequisite
+- **Automation:** Want key management automated (not manual key entry)
+- **Reliability:** Expect 100% accuracy; any data corruption unacceptable
+- **Performance:** Tolerate seconds for encryption but not minutes for moderate files
+- **Documentation:** Need clear, technical documentation with examples
+- **Integration:** Value tools that fit into existing workflows (scripts, pipelines)
+
+**Limitations and Assumptions:**
+- **Not Cryptographers:** Understand encryption benefits but may not know mathematical details
+- **Technical Limitations:** May work on systems without admin privileges (can't install system-wide software)
+- **Time Constraints:** Need quick setup; lengthy configuration unacceptable
+
+**Secondary User Profile: Security-Conscious Individuals**
+
+**Demographics:**
+- **Roles:** Privacy activists, journalists, researchers, concerned citizens
+- **Education:** Varies; may lack formal technical education but highly motivated to protect privacy
+- **Technical Proficiency:** Moderate to low; can follow detailed instructions but uncomfortable with command-line
+
+**Characteristics:**
+- **Motivation:** Strong privacy concerns; may face threats (surveillance, censorship)
+- **Security Priority:** Willing to accept complexity for security
+- **Learning Curve:** Will invest time learning if convinced of security value
+- **Tool Trust:** Seeks trustworthy tools; open-source important for auditability
+
+**Usage Context:**
+- **Frequency:** Occasional; encrypt sensitive documents before sharing
+- **File Types:** Personal documents, communications, research materials
+- **Environment:** Personal computers; may be in adversarial environments
+
+**Current System Limitations:**
+- **CLI Barrier:** Command-line interface challenging for non-technical users
+- **Error Messages:** Technical error messages may be confusing
+
+**Future Considerations:**
+- GUI wrapper could broaden accessibility to this user group
+- Enhanced documentation with step-by-step guides
+- Video tutorials demonstrating common operations
+
+**Tertiary User Profile: Students and Educators**
+
+**Demographics:**
+- **Roles:** Computer science students, cryptography course instructors, academic researchers
+- **Education:** Undergraduate to graduate level in technical fields
+- **Technical Proficiency:** Growing; learning programming and security concepts
+
+**Characteristics:**
+- **Learning Focus:** Interested in "how it works" more than just functionality
+- **Experimentation:** May modify code, test edge cases, explore internals
+- **Academic Use:** Course projects, research experiments, educational demonstrations
+
+**Usage Context:**
+- **Frequency:** Project-based; intensive use during semester, less frequent otherwise
+- **File Types:** Test files, sample data, research datasets
+- **Environment:** University labs, personal laptops
+
+**Needs:**
+- **Clear Code Structure:** Well-commented, readable code for learning
+- **Educational Documentation:** Explanations of cryptographic concepts
+- **Modular Design:** Ability to study and modify individual components
+- **Performance Data:** Benchmarking results for comparison and analysis
+
+**System Design Implications from User Characteristics:**
+
+**For Primary Users (Technical Professionals):**
+- ✅ Command-line interface appropriate (daily terminal users)
+- ✅ Unix-style argument conventions (-f, --help) familiar
+- ✅ Automated key management removes error-prone manual steps
+- ✅ Open-source codebase enables security auditing
+- ✅ Modular architecture supports integration into custom workflows
+
+**For Secondary Users (Security-Conscious Individuals):**
+- ⚠️ CLI may pose barrier; future GUI could improve accessibility
+- ✅ Strong security properties address primary concern
+- ✅ Open-source critical for trust
+- ⚠️ Additional documentation (beginner-friendly guides) would help
+
+**For Tertiary Users (Students/Educators):**
+- ✅ Modular code structure facilitates learning
+- ✅ Comprehensive documentation supports educational use
+- ✅ Performance benchmarking provides data for analysis
+- ✅ Well-commented code explains implementation decisions
+
+**User Skill Requirements:**
+
+**Minimum Skills (Required):**
+- Basic command-line operation (cd, ls, running programs)
+- Understanding of file paths
+- Ability to install Python and packages (following instructions)
+- Reading English-language documentation
+
+**Recommended Skills (Beneficial):**
+- Python programming (for code modification or integration)
+- Basic cryptography concepts (encryption, keys, authentication)
+- Git version control (for tracking changes if modifying code)
+- JSON format familiarity (for understanding metadata)
+
+**Accessibility Considerations:**
+
+**Current System Assumes:**
+- Visual ability (text-based interface)
+- English language proficiency
+- Basic computer literacy
+- Access to supported operating system (Linux, Windows, macOS)
+
+**Not Currently Supported:**
+- Screen reader integration (CLI text-only may or may not work well with screen readers depending on implementation)
+- Non-English languages (interface and documentation English-only)
+- Graphical interface (excludes users uncomfortable with command-line)
+
+**Future Accessibility Enhancements:**
+- Internationalization (translate interface and docs)
+- GUI wrapper (PyQt/Tkinter) for visual, mouse-driven interaction
+- Enhanced error messages with recovery suggestions
+- Video tutorials demonstrating common tasks
+
+## 3.4 Constraints
+
+Constraints define boundaries and limitations affecting system design, implementation, and deployment. Understanding constraints ensures realistic expectations and appropriate design decisions.
+
+**3.4.1 Technical Constraints**
+
+**TC1: Python Runtime Dependency**
+
+**Description:** System requires Python 3.8+ interpreter for execution
+
+**Implications:**
+- Users must install Python (not universally present on all systems)
+- Performance limited by Python's interpreted nature (slower than compiled languages like C/C++ or Rust)
+- Memory management handled by Python garbage collector (less control than manual memory management)
+- Cannot easily distribute as standalone executable (requires Python runtime or bundling with tools like PyInstaller)
+
+**Mitigation:**
+- Python widely available across platforms (free download)
+- Performance adequate for target use cases (see benchmarking results)
+- Clear installation documentation provided
+
+**TC2: Cryptographic Library Dependencies**
+
+**Description:** System depends on external libraries (PyCryptodome, PyNaCl) for cryptographic operations
+
+**Implications:**
+- Cannot modify underlying algorithm implementations
+- Dependent on library maintainers for security updates
+- Potential compatibility issues with future library versions
+- Must trust library implementations (though widely audited)
+
+**Mitigation:**
+- Version pinning in requirements.txt ensures reproducibility
+- Libraries actively maintained with strong security track records
+- Alternative: reimplementing cryptography inadvisable (error-prone, time-intensive)
+
+**TC3: Operating System Dependencies**
+
+**Description:** System relies on OS-provided services (file I/O, random number generation)
+
+**Implications:**
+- Random number quality depends on OS entropy source
+- File I/O performance varies across file systems (ext4, NTFS, APFS)
+- Path handling must accommodate different OS conventions (/ vs \)
+- System calls may have platform-specific behaviors
+
+**Mitigation:**
+- Use Python's cross-platform abstractions (`os.path`, `pathlib`)
+- Modern operating systems provide high-quality entropy sources
+- Testing on multiple platforms validates cross-platform compatibility
+
+**TC4: Memory Constraints**
+
+**Description:** System must operate within available RAM
+
+**Implications:**
+- Cannot load arbitrarily large files entirely into memory
+- Python interpreter and libraries have base memory footprint (~50-100MB)
+- Large-scale batch operations limited by available RAM
+
+**Mitigation:**
+- Streaming implementation for files prevents proportional memory growth
+- Chunk-based processing enables handling files larger than RAM
+- System tested with files up to 100MB; larger files supported through streaming
+
+**TC5: No Hardware Security Module (HSM) Support**
+
+**Description:** Keys generated and processed in software only; no integration with dedicated crypto hardware
+
+**Implications:**
+- Keys present in process memory during operations (vulnerable to memory dumps, rootkit attacks)
+- No secure key storage in tamper-resistant hardware
+- Cannot leverage HSM performance acceleration or key isolation
+
+**Justification:**
+- HSM integration adds significant complexity
+- Academic project scope manageable without HSM
+- Software-only approach more accessible (no specialized hardware required)
+
+**Future Enhancement:** HSM support could be added through PKCS#11 interface in future versions
+
+**3.4.2 Design Constraints**
+
+**DC1: Command-Line Interface Only**
+
+**Description:** No graphical user interface provided in current version
+
+**Implications:**
+- Excludes users uncomfortable with terminal/command-line
+- Text-based feedback only (no visual progress bars, icons, dialogs)
+- Requires users to navigate file systems via paths rather than file browsers
+
+**Justification:**
+- CLI faster to develop than GUI (time constraint)
+- Target users (technical professionals) comfortable with CLI
+- CLI more scriptable and automatable than GUI
+- Future GUI wrapper possible without changing core modules
+
+**DC2: Local Operation Only**
+
+**Description:** No network file transfer capabilities; encryption and decryption occur on local machine
+
+**Implications:**
+- Users must manually transfer encrypted files if sharing (email, cloud upload, USB drive)
+- No client-server architecture or peer-to-peer transfer
+- Cannot encrypt files remotely or decrypt on different machine without file transfer
+
+**Justification:**
+- Network code adds complexity and attack surface
+- Local-only design simpler and more secure (no network vulnerabilities)
+- Users can combine with existing file transfer tools (scp, rsync, cloud sync)
+- Future enhancement possible (socket-based transfer) without core redesign
+
+**DC3: Metadata Storage Requirement**
+
+**Description:** Decryption requires metadata file; loss of metadata prevents decryption
+
+**Implications:**
+- Users must protect metadata files (contain master key)
+- No key recovery mechanism if metadata lost
+- Three files per encryption (file, key, metadata) instead of one
+
+**Justification:**
+- Metadata simplifies decryption (no manual key entry)
+- JSON format human-readable for inspection
+- Users can backup metadata separately or encrypt metadata itself for additional security
+
+**Risk Mitigation:** Documentation emphasizes metadata protection; optional -s flag saves master key to separate backup file
+
+**DC4: Single-User Design**
+
+**Description:** No multi-user access control, shared key management, or collaborative features
+
+**Implications:**
+- Each encryption operation generates unique keys (no key sharing between users)
+- No user authentication or authorization
+- No audit logs or access tracking
+
+**Justification:**
+- Academic project scope; multi-user features add significant complexity
+- Target use case: individual file encryption, not enterprise document management
+- Future enhancement possible (integrate with key management systems)
+
+**3.4.3 Security Constraints**
+
+**SC1: Key Storage in Metadata**
+
+**Description:** XChaCha20 master key stored in metadata file for user convenience
+
+**Implications:**
+- Metadata file must be protected (contains key needed for decryption)
+- Compromise of metadata enables key recovery and subsequent file decryption
+- No separation between "what you have" (encrypted file) and "what you know" (key)
+
+**Risk Assessment:** Moderate risk; mitigated by:
+- File system permissions (only owner can read)
+- Users can encrypt metadata itself for additional layer
+- Users can delete metadata after securely transmitting master key through separate channel
+
+**Alternative Designs Considered:**
+- **Password-based key derivation:** Users enter password to derive master key (increases usability burden, weak passwords vulnerable)
+- **Separate key file encryption:** Store master key in HSM or secure enclave (requires specialized hardware)
+
+**Current Design Justification:** Balances security and usability for target users (technical professionals who understand need to protect metadata)
+
+**SC2: No Forward Secrecy**
+
+**Description:** All information needed for decryption present in metadata; past encryptions remain decryptable indefinitely
+
+**Implications:**
+- If metadata compromised at any time, all past and future encryptions using that key vulnerable
+- No automatic key rotation or expiration
+- Long-lived keys may accumulate risk over time
+
+**Mitigation:**
+- Users should encrypt new files with new keys (system does this automatically for each file)
+- Metadata can be deleted after secure key exchange if forward secrecy desired
+- Future enhancement: Implement key rotation policies
+
+**SC3: Trust in Cryptographic Libraries**
+
+**Description:** Security depends on correctness of PyCryptodome and PyNaCl implementations
+
+**Implications:**
+- Vulnerabilities in libraries affect this system
+- Must rely on library maintainers for security patches
+- Cannot guarantee security beyond what libraries provide
+
+**Mitigation:**
+- Both libraries widely used, regularly audited, and actively maintained
+- Vulnerabilities typically patched quickly
+- Version pinning allows controlled updates after security review
+- Open-source nature enables independent security audits
+
+**SC4: No Post-Quantum Resistance**
+
+**Description:** AES-256 and XChaCha20 vulnerable to quantum attacks (Grover's algorithm)
+
+**Implications:**
+- Future quantum computers could reduce effective security from 256 bits to 128 bits (still considered adequate, but reduced margin)
+- Long-term confidentiality (30+ years) may be at risk from "harvest now, decrypt later" attacks
+
+**Assessment:**
+- 128-bit security adequate for most practical purposes
+- Large-scale quantum computers not expected for 10-20+ years
+- Post-quantum algorithms not yet standardized (NIST PQC competition ongoing)
+
+**Future Enhancement:** Could integrate post-quantum algorithms (Kyber for key encapsulation, AES remains quantum-resistant at 256-bit level with Grover's algorithm) when standards mature
+
+**3.4.4 Operational Constraints**
+
+**OC1: Installation Requirements**
+
+**Description:** Users must install Python and dependencies before first use
+
+**Implications:**
+- Barrier to entry (not double-click executable)
+- Requires internet connection for `pip install` (initial setup)
+- Corporate/institutional environments may restrict software installation
+
+**Mitigation:**
+- Clear installation documentation with step-by-step instructions
+- Virtual environments isolate dependencies (don't affect system Python)
+- Portable Python distributions available for restricted environments
+
+**OC2: Documentation Language**
+
+**Description:** All documentation, error messages, and interface text in English
+
+**Implications:**
+- Excludes non-English speakers
+- May limit adoption in non-English-speaking regions
+
+**Future Enhancement:** Internationalization (i18n) support could be added using gettext or similar framework
+
+**OC3: No Customer Support Infrastructure**
+
+**Description:** Academic project without ongoing support, helpdesk, or professional support contracts
+
+**Implications:**
+- Users must troubleshoot issues independently
+- No guaranteed response to questions or bug reports
+- No service-level agreements (SLAs) or uptime guarantees
+
+**Mitigation:**
+- Comprehensive documentation reduces support needs
+- Open-source nature enables community support
+- GitHub Issues provides platform for community problem-solving
+
+**OC4: Performance Limitations**
+
+**Description:** Python implementation slower than compiled alternatives; no GPU acceleration
+
+**Implications:**
+- Throughput limited compared to hand-optimized C implementations
+- Large file operations may require patience on slow hardware
+- No SIMD vectorization or GPU offloading for parallel processing
+
+**Measured Performance:**
+- Encryption: ~87 MB/s (acceptable for most use cases)
+- Decryption: ~92 MB/s (similar to encryption)
+- For comparison: Specialized tools can achieve 1-5 GB/s with hardware acceleration and optimized code
+
+**Assessment:** Performance adequate for target use cases (documents, source code, moderate databases); users needing multi-GB/s throughput should use specialized tools
+
+**3.4.5 Regulatory and Compliance Constraints**
+
+**RC1: Export Control Considerations**
+
+**Description:** Cryptographic software subject to various national export controls
+
+**Implications:**
+- Distribution across international borders may require notifications or approvals
+- Different countries have varying regulations on encryption strength
+- Academic/educational use generally exempt but varies by jurisdiction
+
+**Current Status:**
+- Project uses publicly available, widely-deployed algorithms (AES, ChaCha20)
+- Open-source educational project generally falls under exemptions
+- U.S. Export Administration Regulations (EAR) allow publicly available cryptographic software with notification
+
+**Compliance Approach:**
+- No commercial distribution planned (academic project)
+- If publishing on GitHub: Public domain software generally exempt
+- Users responsible for compliance in their jurisdictions
+
+**RC2: No FIPS 140-2 Validation**
+
+**Description:** Implementation not formally validated by accredited testing laboratory
+
+**Implications:**
+- Cannot be used in U.S. federal government contexts requiring FIPS 140-2 validated modules
+- Some industries (healthcare, finance) may require FIPS validation for regulated data
+- Algorithms comply with FIPS specifications but implementation not certified
+
+**Justification:**
+- FIPS validation costs $50,000-$200,000 (prohibitive for academic project)
+- Libraries used (PyCryptodome, libsodium) available in FIPS-validated forms separately
+- Academic/research use doesn't require validation
+
+**Alternative:** Organizations requiring FIPS compliance can use validated libraries directly or employ validated commercial solutions
+
+**3.4.6 Time and Resource Constraints**
+
+**TRC1: Development Timeline**
+
+**Description:** Academic semester provides fixed development period (~16 weeks)
+
+**Implications:**
+- Features must fit within available timeline
+- Some desirable features deferred to maintain schedule
+- Testing depth limited by time available
+
+**Impact on Design:**
+- CLI chosen over GUI (faster development)
+- Network features deferred (would require additional 3-4 weeks)
+- Focus on core functionality rather than extensive feature set
+
+**TRC2: Team Size**
+
+**Description:** Two-person development team limits parallelization and specialization
+
+**Implications:**
+- Limited person-hours for development, testing, documentation
+- Cannot simultaneously develop multiple complex features
+- Testing coverage constrained by available effort
+
+**Mitigation:**
+- Modular architecture enables parallel work on independent modules
+- Iterative approach allows focusing on priorities first
+- Comprehensive test cases prioritized over exhaustive testing
+
+**TRC3: Testing Resources**
+
+**Description:** Limited hardware for testing across platforms and configurations
+
+**Implications:**
+- Cannot test on all possible OS versions, Python versions, hardware configurations
+- Performance testing limited to team members' hardware
+- No formal security audit or penetration testing budget
+
+**Testing Approach:**
+- Focus on primary platforms (Ubuntu 22.04, Windows 11)
+- Test with Python 3.10 (other versions expected compatible but not exhaustively tested)
+- Use automated unit and integration tests to maximize coverage with available resources
+
+**Constraint Summary Table**
+
+| Category | Constraint | Impact | Mitigation |
+|----------|------------|--------|------------|
+| Technical | Python dependency | Performance, distribution | Adequate for use case |
+| Technical | Library dependencies | Update vulnerability | Version pinning |
+| Design | CLI only | User accessibility | Future GUI possible |
+| Design | Local operation | No network transfer | Combine with transfer tools |
+| Security | Metadata storage | Key protection burden | User responsibility, docs |
+| Security | No post-quantum | Long-term vulnerability | Future enhancement |
+| Operational | Installation required | Setup complexity | Clear documentation |
+| Operational | Performance limits | Slower than C/Rust | Acceptable for target files |
+| Regulatory | No FIPS validation | Gov/enterprise limits | Algorithms comply with specs |
+| Resource | Time constraint | Feature scope | Focus on core functionality |
+
+**Overall Impact of Constraints:**
+
+Constraints guided design toward:
+- **Simplicity:** CLI over GUI, local over networked, automated over manual
+- **Security:** Library-based over custom crypto, authenticated encryption mandatory
+- **Feasibility:** Features achievable within time/resource limits
+- **Extensibility:** Modular design enables future enhancements beyond initial scope
+
+Constraints represent realistic boundaries for academic project; system delivers functional, secure file encryption within defined limitations.
+
+## 3.5 Use Case Model / Flow Charts / DFDs
+
+This section provides visual representations of system functionality through use case diagrams, flowcharts, and data flow diagrams.
+
+**3.5.1 Use Case Diagram**
+
+The following diagram illustrates actors and their interactions with the system:
+
+```
+                    ┌─────────────────────┐
+                    │                     │
+         ┌──────────┤   File Encryption   │◄─────────┐
+         │          │      System         │          │
+         │          │                     │          │
+         │          └─────────────────────┘          │
+         │                                           │
+    ┌────▼────┐                                 ┌────▼────┐
+    │  User   │                                 │   OS    │
+    │(Primary)│                                 │ (Actor) │
+    └────┬────┘                                 └────┬────┘
+         │                                           │
+         │    ┌──────────────────────────────┐      │
+         ├───►│ UC1: Encrypt File            │      │
+         │    │ - Provide file path          │      │
+         │    │ - System encrypts with hybrid│      │
+         │    │ - Receive encrypted outputs  │      │
+         │    └──────────────────────────────┘      │
+         │                                           │
+         │    ┌──────────────────────────────┐      │
+         ├───►│ UC2: Decrypt File            │      │
+         │    │ - Provide metadata path      │      │
+         │    │ - System verifies & decrypts │      │
+         │    │ - Receive original file      │      │
+         │    └──────────────────────────────┘      │
+         │                                           │
+         │    ┌──────────────────────────────┐      │
+         ├───►│ UC3: View System Info        │      │
+         │    │ - Request information        │      │
+         │    │ - Display algorithms, features│     │
+         │    └──────────────────────────────┘      │
+         │                                           │
+         │    ┌──────────────────────────────┐      │
+         └───►│ UC4: Benchmark Performance   │      │
+              │ - Specify file sizes         │      │
+              │ - System measures performance│◄─────┘
+              │ - Generate graphs & reports  │ (provides entropy,
+              └──────────────────────────────┘  file system access)
+```
+
+**Actors:**
+
+1. **User (Primary Actor):** Technical professional initiating encryption/decryption operations
+2. **Operating System (Secondary Actor):** Provides file system access, random number generation, process management
+
+**Use Cases:**
+
+**UC1: Encrypt File**
+- **Goal:** Encrypt a file using hybrid AES + XChaCha20 approach
+- **Preconditions:** User has file to encrypt, system installed and configured
+- **Postconditions:** Three files created (.enc, .key, .meta); original file unchanged
+- **Main Success Scenario:**
+  1. User executes encrypt command with file path
+  2. System validates file exists and is readable
+  3. System generates AES key and encrypts file
+  4. System generates XChaCha20 key and encrypts AES key
+  5. System creates metadata with all necessary information
+  6. System saves encrypted file, encrypted key, and metadata
+  7. System displays success message with file locations
+- **Extensions (Error Flows):**
+  - 2a. File not found → Display error, suggest checking path, exit
+  - 2b. File not readable → Display permission error, exit
+  - 3a. Encryption fails → Display library error, exit
+  - 6a. Cannot write output → Display disk space/permission error, exit
+
+**UC2: Decrypt File**
+- **Goal:** Decrypt a file using metadata reference
+- **Preconditions:** User has metadata file from previous encryption
+- **Postconditions:** Original file restored; integrity verified
+- **Main Success Scenario:**
+  1. User executes decrypt command with metadata path
+  2. System loads and validates metadata
+  3. System loads encrypted key and decrypts using master key from metadata
+  4. System verifies key authentication tag (Poly1305)
+  5. System loads encrypted file and decrypts using recovered AES key
+  6. System verifies file authentication tag (GCM)
+  7. System saves decrypted file with original name
+  8. System displays success message
+- **Extensions (Error Flows):**
+  - 2a. Metadata not found → Display error, exit
+  - 2b. Invalid JSON format → Display "corrupted metadata" error, exit
+  - 4a. Key authentication fails → Display "key tampered" error, DO NOT output plaintext, exit
+  - 6a. File authentication fails → Display "file tampered" error, DO NOT output plaintext, exit
+
+**UC3: View System Information**
+- **Goal:** Learn about system capabilities and usage
+- **Preconditions:** System installed
+- **Postconditions:** User informed about algorithms, features, usage
+- **Main Success Scenario:**
+  1. User executes info command
+  2. System displays banner with project information
+  3. System lists encryption methods (AES-256-GCM, XChaCha20-Poly1305)
+  4. System describes key features (256-bit keys, 192-bit nonces, authentication)
+  5. System explains security benefits
+  6. System provides usage examples
+
+**UC4: Benchmark Performance**
+- **Goal:** Measure and visualize system performance
+- **Preconditions:** System installed, matplotlib available (optional)
+- **Postconditions:** Performance data recorded, graphs generated
+- **Main Success Scenario:**
+  1. User executes performance test script
+  2. System confirms test parameters (file sizes, iterations)
+  3. For each file size:
+     a. System generates test file
+     b. System measures encryption time
+     c. System measures decryption time
+     d. System verifies integrity
+  4. System saves results as JSON
+  5. System generates visualization graphs (if matplotlib available)
+  6. System displays summary table
+
+**3.5.2 Encryption Process Flowchart**
+
+```
+              START
+                │
+                ▼
+     ┌──────────────────────┐
+     │ User: Provide File   │
+     │   Path via CLI       │
+     └──────────┬───────────┘
+                │
+                ▼
+       ┌────────────────┐
+       │ Validate File  │
+       │ Exists?        │
+       └───┬────────┬───┘
+           │        │
+          NO       YES
+           │        │
+           ▼        ▼
+    ┌──────────┐  ┌──────────────────────┐
+    │  Error:  │  │ Generate Random      │
+    │   File   │  │ 256-bit AES Key      │
+    │Not Found │  │ (os.urandom(32))     │
+    └────┬─────┘  └──────────┬───────────┘
+         │                   │
+         ▼                   ▼
+       EXIT         ┌──────────────────────┐
+                    │ Generate Random      │
+                    │ 128-bit Nonce        │
+                    │ (os.urandom(16))     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Encrypt File with    │
+                    │ AES-256-GCM          │
+                    │ cipher.encrypt_and_  │
+                    │ digest(plaintext)    │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Write Encrypted File │
+                    │ Format: nonce + tag  │
+                    │ + ciphertext         │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Generate Random      │
+                    │ 256-bit Master Key   │
+                    │ for XChaCha20        │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Encrypt AES Key      │
+                    │ with XChaCha20       │
+                    │ (auto 192-bit nonce) │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Write Encrypted Key  │
+                    │ (72 bytes fixed)     │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Create Metadata JSON │
+                    │ - Original filename  │
+                    │ - File paths         │
+                    │ - Master key (hex)   │
+                    │ - File size          │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Write Metadata File  │
+                    │ (.meta extension)    │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Display Success      │
+                    │ Message with File    │
+                    │ Locations            │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                             EXIT
+```
+
+**3.5.3 Decryption Process Flowchart**
+
+```
+              START
+                │
+                ▼
+     ┌──────────────────────┐
+     │ User: Provide        │
+     │ Metadata File Path   │
+     └──────────┬───────────┘
+                │
+                ▼
+       ┌────────────────┐
+       │ Metadata File  │
+       │ Exists?        │
+       └───┬────────┬───┘
+           │        │
+          NO       YES
+           │        │
+           ▼        ▼
+    ┌──────────┐  ┌──────────────────────┐
+    │  Error:  │  │ Load & Parse         │
+    │Metadata  │  │ Metadata JSON        │
+    │Not Found │  └──────────┬───────────┘
+    └────┬─────┘             │
+         │                   ▼
+         ▼            ┌────────────────┐
+       EXIT           │ Valid JSON?    │
+                      └───┬────────┬───┘
+                          │        │
+                         NO       YES
+                          │        │
+                          ▼        ▼
+                   ┌──────────┐  ┌──────────────────────┐
+                   │  Error:  │  │ Extract Master Key   │
+                   │ Invalid  │  │ from Metadata        │
+                   │Metadata  │  │ (hex decode)         │
+                   └────┬─────┘  └──────────┬───────────┘
+                        │                   │
+                        ▼                   ▼
+                      EXIT         ┌──────────────────────┐
+                                   │ Load Encrypted Key   │
+                                   │ File (.key)          │
+                                   └──────────┬───────────┘
+                                              │
+                                              ▼
+                                   ┌──────────────────────┐
+                                   │ Decrypt AES Key      │
+                                   │ with XChaCha20       │
+                                   │ using Master Key     │
+                                   └──────────┬───────────┘
+                                              │
+                                              ▼
+                                   ┌────────────────┐
+                                   │ Verify Poly1305│
+                                   │ Tag Valid?     │
+                                   └───┬────────┬───┘
+                                       │        │
+                                      NO       YES
+                                       │        │
+                                       ▼        ▼
+                                ┌──────────┐  ┌──────────────────────┐
+                                │  Error:  │  │ Load Encrypted File  │
+                                │   Key    │  │ Extract: nonce, tag, │
+                                │Tampered  │  │ ciphertext           │
+                                └────┬─────┘  └──────────┬───────────┘
+                                     │                   │
+                                     ▼                   ▼
+                                   EXIT         ┌──────────────────────┐
+                                                │ Decrypt File with    │
+                                                │ AES-GCM using        │
+                                                │ Recovered Key        │
+                                                └──────────┬───────────┘
+                                                           │
+                                                           ▼
+                                                ┌────────────────┐
+                                                │ Verify GCM     │
+                                                │ Tag Valid?     │
+                                                └───┬────────┬───┘
+                                                    │        │
+                                                   NO       YES
+                                                    │        │
+                                                    ▼        ▼
+                                             ┌──────────┐  ┌──────────────────────┐
+                                             │  Error:  │  │ Write Decrypted File │
+                                             │   File   │  │ with Original Name   │
+                                             │Tampered  │  └──────────┬───────────┘
+                                             └────┬─────┘             │
+                                                  │                   ▼
+                                                  ▼            ┌──────────────────────┐
+                                                EXIT           │ Display Success      │
+                                                               │ Message              │
+                                                               └──────────┬───────────┘
+                                                                          │
+                                                                          ▼
+                                                                        EXIT
+```
+
+**Critical Security Decision Points:**
+- **Poly1305 Tag Verification:** If key authentication fails, abort immediately without attempting file decryption
+- **GCM Tag Verification:** If file authentication fails, abort without writing any plaintext output
+- Both checks ensure NO unauthenticated data ever reaches user
+
+**3.5.4 Data Flow Diagram - Level 0 (Context Diagram)**
+
+```
+                    ┌───────────────┐
+                    │               │
+                    │     USER      │
+                    │               │
+                    └───────┬───────┘
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+      filename│    metadata │    command  │
+              │             │             │
+              ▼             ▼             ▼
+    ┌─────────────────────────────────────────┐
+    │                                         │
+    │     HYBRID FILE ENCRYPTION SYSTEM       │
+    │                                         │
+    │  • Encrypts files (AES + XChaCha20)    │
+    │  • Decrypts files (with verification)   │
+    │  • Manages keys automatically           │
+    │                                         │
+    └──────────┬──────────────────────┬───────┘
+               │                      │
+               │ encrypted files      │ status messages
+               │ + metadata           │ + decrypted files
+               ▼                      ▼
+    ┌──────────────────┐    ┌──────────────────┐
+    │                  │    │                  │
+    │   FILE SYSTEM    │    │     CONSOLE      │
+    │                  │    │    (stdout)      │
+    │  Stores .enc,    │    │  Displays user   │
+    │  .key, .meta     │    │   messages       │
+    │                  │    │                  │
+    └──────────────────┘    └──────────────────┘
+```
+
+**External Entities:**
+- **User:** Provides commands, file paths; receives feedback
+- **File System:** Stores encrypted/decrypted files, metadata
+- **Console:** Displays status messages, errors, information
+
+**Data Flows:**
+1. User → System: Commands (encrypt/decrypt), file paths
+2. System → File System: Write encrypted files, keys, metadata
+3. File System → System: Read files for encryption/decryption
+4. System → Console: Status messages, errors, results
+
+**3.5.5 Data Flow Diagram - Level 1 (Detailed Process View)**
+
+```
+┌──────────┐
+│   USER   │
+└─────┬────┘
+      │
+      │ (1) file path + command
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  1.0                                    │
+│  COMMAND LINE INTERFACE                 │
+│  - Parse arguments                      │
+│  - Validate inputs                      │
+│  - Route to appropriate process         │
+└──────┬──────────────────────┬───────────┘
+       │                      │
+       │ (2) encrypt request  │ (3) decrypt request
+       │                      │
+       ▼                      ▼
+┌──────────────────┐   ┌──────────────────┐
+│  2.0             │   │  3.0             │
+│  HYBRID          │   │  HYBRID          │
+│  ENCRYPTION      │   │  DECRYPTION      │
+│  CONTROLLER      │   │  CONTROLLER      │
+└───┬──────────┬───┘   └───┬──────────┬───┘
+    │          │           │          │
+    │(4) file  │(5) AES    │(6) load  │(7) decrypt
+    │content   │key        │enc key   │AES key
+    │          │           │          │
+    ▼          ▼           ▼          ▼
+┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+│  2.1   │ │  2.2   │ │  3.1   │ │  3.2   │
+│  AES   │ │XChaCha │ │XChaCha │ │  AES   │
+│ Encrypt│ │  Key   │ │  Key   │ │Decrypt │
+│ Module │ │ Encrypt│ │ Decrypt│ │ Module │
+└────┬───┘ └───┬────┘ └───┬────┘ └────┬───┘
+     │         │          │         │
+     │(8) enc  │(9) enc   │(10) AES │(11) plain
+     │file     │key       │key      │text
+     │         │          │         │
+     └────┬────┴─────┬────┴────┬────┘
+          │          │         │
+          ▼          ▼         ▼
+     ┌────────────────────────────┐
+     │  4.0                       │
+     │  FILE SYSTEM INTERFACE     │
+     │  - Write encrypted files   │
+     │  - Write metadata          │
+     │  - Read files for decrypt  │
+     └──────────┬─────────────────┘
+                │
+                │ (12) files written/read
+                │
+                ▼
+         ┌──────────────┐
+         │ FILE SYSTEM  │
+         │  (Storage)   │
+         └──────────────┘
+```
+
+**Data Stores:**
+- **D1: Encrypted Files (.enc)** - Stores AES-encrypted file content
+- **D2: Encrypted Keys (.key)** - Stores XChaCha20-encrypted AES keys
+- **D3: Metadata (.meta)** - Stores JSON with decryption information
+
+**Processes:**
+- **1.0 CLI Interface:** Parses user commands, validates inputs
+- **2.0 Hybrid Encryption Controller:** Orchestrates encryption workflow
+- **2.1 AES Encrypt Module:** Encrypts file content
+- **2.2 XChaCha20 Key Encrypt:** Encrypts AES keys
+- **3.0 Hybrid Decryption Controller:** Orchestrates decryption workflow
+- **3.1 XChaCha20 Key Decrypt:** Decrypts AES keys
+- **3.2 AES Decrypt Module:** Decrypts file content
+- **4.0 File System Interface:** Handles file I/O operations
+
+**Data Flows (Numbered):**
+1. User provides file path and command
+2. CLI routes encryption request to controller
+3. CLI routes decryption request to controller
+4. Controller sends file content to AES module
+5. Controller sends AES key to XChaCha20 module
+6. Controller loads encrypted key for decryption
+7. Controller sends encrypted key to XChaCha20 for decryption
+8. AES module returns encrypted file
+9. XChaCha20 module returns encrypted key
+10. XChaCha20 module returns decrypted AES key
+11. AES module returns plaintext
+12. File system interface writes/reads files
+
+## 3.6 Database Design
+
+**Note:** This system does not employ a traditional database management system (DBMS) such as MySQL, PostgreSQL, or MongoDB. All persistent data storage implemented through file system with structured file formats.
+
+**Rationale for File-Based Storage:**
+
+1. **Simplicity:** No database server installation, configuration, or maintenance required
+2. **Portability:** Encrypted files and metadata easily transferred between systems via any file transfer method
+3. **Self-Contained:** Each encryption operation produces standalone artifacts requiring no central database
+4. **User Control:** Users directly manage files using familiar file system tools (ls, cp, mv, backup utilities)
+5. **No Query Requirements:** System doesn't need complex queries, joins, or transactions; simple file read/write sufficient
+
+**File-Based Storage Architecture:**
+
+**Primary Storage Elements:**
+
+1. **Encrypted Files (.enc)**
+   - Purpose: Store AES-GCM encrypted file content
+   - Format: Binary (nonce + tag + ciphertext)
+   - Size: Original file size + 32 bytes overhead
+   - Location: User-specified directory (default: encrypted/)
+
+2. **Encrypted Key Files (.key)**
+   - Purpose: Store XChaCha20-Poly1305 encrypted AES keys
+   - Format: Binary (nonce + encrypted key + tag)
+   - Size: Fixed 72 bytes
+   - Location: Same directory as encrypted file
+
+3. **Metadata Files (.meta)**
+   - Purpose: Store decryption information in human-readable format
+   - Format: JSON (UTF-8 encoded text)
+   - Size: ~200-500 bytes (depends on path lengths)
+   - Location: Same directory as encrypted file
+
+**Alternative Approaches Considered:**
+
+**SQLite Database:**
+- **Advantages:** Structured queries, ACID transactions, single-file database
+- **Disadvantages:** Additional dependency, unnecessary complexity for simple key-value storage, less portable than plain files
+- **Decision:** Rejected; file-based approach simpler for this use case
+
+**NoSQL Document Store (MongoDB, CouchDB):**
+- **Advantages:** Schema flexibility, JSON-native
+- **Disadvantages:** Requires server process, overkill for local file encryption
+- **Decision:** Rejected; too heavy for requirements
+
+**Key-Value Store (Redis, LevelDB):**
+- **Advantages:** Fast lookups, simple API
+- **Disadvantages:** Another process/dependency, data not human-readable
+- **Decision:** Rejected; plain JSON files sufficient
+
+**File Organization Strategy:**
+
+```
+project_root/
+├── encrypted/                    # Default output for encryption
+│   ├── document.pdf.enc          # Encrypted file content
+│   ├── document.pdf.key          # Encrypted AES key
+│   ├── document.pdf.meta         # Metadata JSON
+│   ├── image.jpg.enc
+│   ├── image.jpg.key
+│   └── image.jpg.meta
+├── decrypted/                    # Default output for decryption
+│   ├── document.pdf              # Restored original files
+│   └── image.jpg
+└── results/                      # Performance test results
+    ├── performance_results_20241101_143052.json
+    └── graphs/
+        ├── encryption_time.png
+        ├── decryption_time.png
+        └── throughput.png
+```
+
+**File Naming Conventions:**
+- **Encrypted file:** `{original_filename}.enc`
+- **Encrypted key:** `{original_filename}.key`
+- **Metadata:** `{original_filename}.meta`
+- **Decrypted file:** `{original_filename}` (original name restored)
+
+**Advantages of This Approach:**
+- Users can see all related files together (same directory, same base name)
+- File extensions clearly indicate file type
+- Easy to back up (copy entire directory)
+- Simple to clean up (delete all files with same base name)
+- No database corruption risks
+
+## 3.7 Table Structure
+
+While no relational database exists, metadata files contain structured data analogous to database records. This section documents the "schema" of these structures.
+
+**Metadata File Structure (JSON Format)**
+
+The metadata file serves as a "record" containing all information needed for decryption.
+
+```json
+{
+  "original_filename": "document.pdf",
+  "encrypted_file": "encrypted/document.pdf.enc",
+  "key_file": "encrypted/document.pdf.key",
+  "master_key": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+  "file_size": 1048576,
+  "timestamp": "2024-11-01T14:30:00Z",
+  "version": "1.0"
+}
+```
+
+**Field Specifications:**
+
+| Field Name | Data Type | Length/Format | Required | Description |
+|------------|-----------|---------------|----------|-------------|
+| original_filename | String | Variable | Yes | Original file name before encryption |
+| encrypted_file | String (path) | Variable | Yes | Relative or absolute path to .enc file |
+| key_file | String (path) | Variable | Yes | Relative or absolute path to .key file |
+| master_key | String (hex) | 64 characters | Yes | Hex-encoded 256-bit XChaCha20 master key |
+| file_size | Integer | Positive | Yes | Original file size in bytes |
+| timestamp | String (ISO 8601) | Variable | No | Encryption operation timestamp |
+| version | String | Semantic version | No | Metadata format version (future compatibility) |
+
+**Field Constraints and Validation:**
+
+**original_filename:**
+- Must be non-empty string
+- Should be valid filename for target OS
+- May contain Unicode characters (UTF-8 encoding)
+- Example: `"report_2024.pdf"`, `"数据.txt"` (Chinese characters)
+
+**encrypted_file:**
+- Must be valid file path (relative or absolute)
+- File must exist at specified location
+- Should end with .enc extension (by convention)
+- Example: `"encrypted/document.pdf.enc"`, `"/home/user/secure/file.enc"`
+
+**key_file:**
+- Must be valid file path
+- File must exist and be exactly 72 bytes
+- Should end with .key extension
+- Example: `"encrypted/document.pdf.key"`
+
+**master_key:**
+- Must be exactly 64 hexadecimal characters (0-9, a-f)
+- Represents 256-bit (32-byte) key
+- Case-insensitive but lowercase preferred
+- Example: `"3a7b9f2c1e5d8a6f4c2b9e7d3f5a8c1b2e4d6a8c9f1b3e5d7a9c2f4e6a8b0d1f3"`
+- Validation regex: `^[0-9a-fA-F]{64}
+
+**file_size:**
+- Must be positive integer (> 0)
+- Represents bytes
+- Used for validation and informational purposes
+- Example: `1048576` (1 MB), `52428800` (50 MB)
+
+**timestamp (optional):**
+- ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`
+- UTC timezone preferred
+- Used for auditing, not security-critical
+- Example: `"2024-11-01T14:30:00Z"`
+
+**version (optional):**
+- Semantic versioning: `MAJOR.MINOR.PATCH`
+- Current version: `"1.0"`
+- Enables future format compatibility checking
+- Example: `"1.0"`, `"1.1"`
+
+**Encrypted File Structure (.enc - Binary Format)**
+
+Not a "table" but structured binary format:
+
+```
+┌─────────────────────────────────────────────┐
+│ Byte Offset │ Content          │ Size       │
+├─────────────────────────────────────────────┤
+│ 0-15        │ AES-GCM Nonce    │ 16 bytes   │
+│ 16-31       │ Authentication   │ 16 bytes   │
+│             │ Tag (GCM)        │            │
+│ 32-EOF      │ Encrypted Content│ Variable   │
+└─────────────────────────────────────────────┘
+Total Size: Original File Size + 32 bytes
+```
+
+**Field Specifications:**
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| Nonce | Binary | 16 bytes | Random nonce for AES-GCM (must be unique per encryption) |
+| Tag | Binary | 16 bytes | GCM authentication tag computed over ciphertext |
+| Ciphertext | Binary | Variable | AES-256 encrypted file content (same size as plaintext) |
+
+**Encrypted Key Structure (.key - Binary Format)**
+
+Fixed-size binary format produced by XChaCha20-Poly1305:
+
+```
+┌─────────────────────────────────────────────┐
+│ Byte Offset │ Content          │ Size       │
+├─────────────────────────────────────────────┤
+│ 0-23        │ XChaCha20 Nonce  │ 24 bytes   │
+│ 24-55       │ Encrypted AES Key│ 32 bytes   │
+│ 56-71       │ Authentication   │ 16 bytes   │
+│             │ Tag (Poly1305)   │            │
+└─────────────────────────────────────────────┘
+Total Size: Fixed 72 bytes
+```
+
+**Field Specifications:**
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| Nonce | Binary | 24 bytes | Random nonce for XChaCha20 (192 bits) |
+| Encrypted Key | Binary | 32 bytes | XChaCha20-encrypted AES key |
+| Tag | Binary | 16 bytes | Poly1305 authentication tag |
+
+**Performance Results Structure (JSON Format)**
+
+Performance testing generates structured results:
+
+```json
+{
+  "test_date": "2024-11-01 14:30:00",
+  "results": [
+    {
+      "file_size_mb": 10,
+      "encryption_time": 0.115,
+      "encryption_throughput": 87.0,
+      "decryption_time": 0.109,
+      "decryption_throughput": 91.7,
+      "total_time": 0.224,
+      "integrity_verified": true
+    }
+  ]
+}
+```
+
+**Field Specifications:**
+
+| Field | Type | Description | Units |
+|-------|------|-------------|-------|
+| test_date | String | Timestamp of test execution | ISO format |
+| results | Array | List of test results for different file sizes | - |
+| file_size_mb | Float | File size tested | Megabytes |
+| encryption_time | Float | Time to encrypt | Seconds |
+| encryption_throughput | Float | Encryption speed | MB/s |
+| decryption_time | Float | Time to decrypt | Seconds |
+| decryption_throughput | Float | Decryption speed | MB/s |
+| total_time | Float | Combined encrypt + decrypt time | Seconds |
+| integrity_verified | Boolean | SHA-256 hash match confirmed | true/false |
+
+**Data Integrity and Validation**
+
+**Metadata Validation Process:**
+1. Parse JSON (validate syntax)
+2. Check all required fields present
+3. Validate master_key is 64-character hex string
+4. Validate file_size is positive integer
+5. Validate paths point to existing files (during decryption)
+6. Validate timestamp format if present (optional field)
+
+**Example Validation Code:**
+```python
+def validate_metadata(metadata):
+    required_fields = [
+        'original_filename', 
+        'encrypted_file', 
+        'key_file', 
+        'master_key', 
+        'file_size'
+    ]
+    
+    # Check required fields exist
+    for field in required_fields:
+        if field not in metadata:
+            raise ValueError(f"Missing required field: {field}")
+    
+    # Validate master_key format
+    if not re.match:
+        raise ValueError("Invalid master_key format")
+    
+    # Validate file_size
+    if not isinstance(metadata['file_size'], int) or metadata['file_size'] <= 0:
+        raise ValueError("Invalid file_size")
+    
+    return True
+```
+
+**Error Handling:**
+- **Invalid JSON:** `json.JSONDecodeError` → "Corrupted metadata file"
+- **Missing fields:** `KeyError` → "Incomplete metadata"
+- **Invalid hex:** `ValueError` → "Invalid master key format"
+- **File not found:** `FileNotFoundError` → "Encrypted file missing"
+
+## 3.8 ER Diagrams
+
+Traditional Entity-Relationship diagrams model relational database structures. Since this system uses file-based storage, we present a **File Relationship Diagram** showing how files relate conceptually.
+
+**File Entity-Relationship Model**
+
+```
+┌─────────────────────────┐
+│   ORIGINAL FILE         │
+│   (Entity)              │
+│                         │
+│ Attributes:             │
+│ • filename (PK)         │
+│ • content (binary)      │
+│ • size (bytes)          │
+│ • type (extension)      │
+└────────────┬────────────┘
+             │
+             │ (1:1)
+             │ "encrypts to"
+             │
+             ▼
+┌─────────────────────────┐
+│   ENCRYPTED FILE        │
+│   (.enc file)           │
+│                         │
+│ Attributes:             │
+│ • filepath (PK)         │
+│ • nonce (16 bytes)      │
+│ • auth_tag (16 bytes)   │
+│ • ciphertext (binary)   │
+└────────────┬────────────┘
+             │
+             │ (1:1)
+             │ "protected by"
+             │
+             ▼
+┌─────────────────────────┐
+│   AES KEY               │
+│   (Ephemeral Entity)    │
+│                         │
+│ Attributes:             │
+│ • key_value (32 bytes)  │
+│ • algorithm (AES-256)   │
+│ • lifetime (in-memory)  │
+└────────────┬────────────┘
+             │
+             │ (1:1)
+             │ "encrypted to"
+             │
+             ▼
+┌─────────────────────────┐
+│   ENCRYPTED KEY         │
+│   (.key file)           │
+│                         │
+│ Attributes:             │
+│ • filepath (PK)         │
+│ • nonce (24 bytes)      │
+│ • enc_key (32 bytes)    │
+│ • auth_tag (16 bytes)   │
+│ • size (fixed: 72 bytes)│
+└────────────┬────────────┘
+             │
+             │ (1:1)
+             │ "protected by"
+             │
+             ▼
+┌─────────────────────────┐
+│   MASTER KEY            │
+│   (Stored in Metadata)  │
+│                         │
+│ Attributes:             │
+│ • key_value (32 bytes)  │
+│ • algorithm (XChaCha20) │
+│ • format (hex string)   │
+└────────────┬────────────┘
+             │
+             │ (1:1)
+             │ "stored in"
+             │
+             ▼
+┌─────────────────────────┐
+│   METADATA              │
+│   (.meta file)          │
+│                         │
+│ Attributes:             │
+│ • filepath (PK)         │
+│ • original_filename     │
+│ • encrypted_file_path   │
+│ • key_file_path         │
+│ • master_key (hex)      │
+│ • file_size             │
+│ • timestamp (optional)  │
+│ • version (optional)    │
+└─────────────────────────┘
+```
+
+**Relationships:**
+
+1. **ORIGINAL_FILE → ENCRYPTED_FILE (1:1)**
+   - **Relationship:** "encrypts to"
+   - **Cardinality:** One-to-one (one original produces one encrypted file)
+   - **Referential Integrity:** Encrypted file references original via metadata
+   - **Cascade:** If original deleted, encrypted file becomes orphaned (decryption still possible with metadata)
+
+2. **ENCRYPTED_FILE → AES_KEY (1:1)**
+   - **Relationship:** "protected by"
+   - **Cardinality:** One-to-one (each encrypted file has unique AES key)
+   - **Referential Integrity:** Key never reused across encryptions
+   - **Lifecycle:** Key exists only in memory during operation
+
+3. **AES_KEY → ENCRYPTED_KEY (1:1)**
+   - **Relationship:** "encrypted to"
+   - **Cardinality:** One-to-one (AES key encrypted before storage)
+   - **Referential Integrity:** Encrypted key file contains complete key package
+   - **Storage:** Persistent (saved to disk as .key file)
+
+4. **ENCRYPTED_KEY → MASTER_KEY (1:1)**
+   - **Relationship:** "protected by"
+   - **Cardinality:** One-to-one (each encrypted key has unique master key)
+   - **Referential Integrity:** Master key specific to this encryption operation
+   - **Storage:** Stored in metadata (not separate file)
+
+5. **MASTER_KEY → METADATA (1:1)**
+   - **Relationship:** "stored in"
+   - **Cardinality:** One-to-one (master key embedded in metadata)
+   - **Format:** Hex-encoded string (64 characters)
+   - **Purpose:** Enables decryption without separate key management
+
+6. **METADATA → ENCRYPTED_FILE + ENCRYPTED_KEY (1:2)**
+   - **Relationship:** "references"
+   - **Cardinality:** One-to-many (metadata references both file and key)
+   - **Referential Integrity:** Paths stored in metadata must point to existing files
+   - **Purpose:** Central index tying all components together
+
+**Dependency Graph for Decryption:**
+
+```
+To Successfully Decrypt:
+
+        ┌─────────────┐
+        │  METADATA   │ (Required: contains master_key)
+        │   (.meta)   │
+        └──────┬──────┘
+               │
+     ┌─────────┴─────────┐
+     │                   │
+     ▼                   ▼
+┌────────────┐    ┌──────────────┐
+│ENCRYPTED   │    │  ENCRYPTED   │
+│   KEY      │    │    FILE      │
+│  (.key)    │    │   (.enc)     │
+└─────┬──────┘    └──────┬───────┘
+      │                  │
+      │ decrypt with     │ decrypt with
+      │ master_key       │ recovered AES key
+      │                  │
+      ▼                  │
+┌────────────┐           │
+│  AES KEY   │───────────┘
+│(in memory) │
+└────────────┘
+      │
+      ▼
+┌──────────────┐
+│  PLAINTEXT   │
+│   (output)   │
+└──────────────┘
+```
+
+**File Lifecycle Diagram:**
+
+```
+ENCRYPTION LIFECYCLE:
+
+[Original File] ──┐
+                  │
+                  ├──► [Read Content]
+                  │           │
+                  │           ▼
+                  │    [Generate AES Key]
+                  │           │
+                  │           ▼
+                  │    [Encrypt with AES]
+                  │           │
+                  │           ▼
+                  │    [Write .enc file]
+                  │           │
+                  │           ├──► [Encrypted File Created]
+                  │           │
+                  │           ▼
+                  │    [Generate Master Key]
+                  │           │
+                  │           ▼
+                  │    [Encrypt AES Key]
+                  │           │
+                  │           ▼
+                  │    [Write .key file]
+                  │           │
+                  │           ├──► [Encrypted Key Created]
+                  │           │
+                  │           ▼
+                  │    [Create Metadata]
+                  │           │
+                  │           ▼
+                  │    [Write .meta file]
+                  │           │
+                  │           ├──► [Metadata Created]
+                  │           │
+                  └───────────┴──► [Original File Unchanged]
+
+
+DECRYPTION LIFECYCLE:
+
+[Metadata File] ──┐
+                  │
+                  ├──► [Parse JSON]
+                  │           │
+                  │           ▼
+                  │    [Extract Master Key]
+                  │           │
+                  │           ▼
+                  │    [Load .key file]
+                  │           │
+                  │           ▼
+                  │    [Decrypt AES Key]
+                  │           │
+                  │           ├──► [Verify Poly1305 Tag] ──NO──► [Abort]
+                  │           │              │
+                  │           │             YES
+                  │           │              │
+                  │           ▼              │
+                  │    [Load .enc file]◄─────┘
+                  │           │
+                  │           ▼
+                  │    [Decrypt Content]
+                  │           │
+                  │           ├──► [Verify GCM Tag] ──NO──► [Abort]
+                  │           │              │
+                  │           │             YES
+                  │           │              │
+                  │           ▼              │
+                  │    [Write Plaintext]◄────┘
+                  │           │
+                  └───────────┴──► [Original File Restored]
+```
+
+**Referential Integrity Constraints:**
+
+Since no database enforces referential integrity, application logic must ensure:
+
+1. **Metadata → Encrypted File:** Path in metadata must point to existing .enc file
+2. **Metadata → Encrypted Key:** Path in metadata must point to existing .key file
+3. **Filename Consistency:** All three files (.enc, .key, .meta) should share same base name
+4. **Key File Size:** .key file must be exactly 72 bytes (corrupted if different size)
+5. **Metadata Completeness:** All required fields must be present and valid
+
+**Validation performed during decryption:**
+```python
+def validate_decryption_files(metadata):
+    # Check encrypted file exists
+    if not os.path.exists(metadata['encrypted_file']):
+        raise FileNotFoundError("Encrypted file not found")
+    
+    # Check key file exists and correct size
+    if not os.path.exists(metadata['key_file']):
+        raise FileNotFoundError("Key file not found")
+    
+    key_size = os.path.getsize(metadata['key_file'])
+    if key_size != 72:
+        raise ValueError(f"Invalid key file size: {key_size} (expected 72)")
+    
+    return True
+```
+
+## 3.9 Assumptions and Dependencies
+
+This section documents assumptions underlying system design and external dependencies that must be satisfied for correct operation.
+
+**3.9.1 Assumptions**
+
+**A1: Operating System Provides Secure Randomness**
+
+**Assumption:** `os.urandom()` or Python `secrets` module provides cryptographically secure random bytes with sufficient entropy.
+
+**Justification:**
+- Modern operating systems maintain entropy pools seeded from hardware sources (keyboard/mouse timing, disk I/O timing, hardware RNGs)
+- Linux: /dev/urandom draws from kernel entropy pool (CSPRNG)
+- Windows: CryptGenRandom uses Windows Cryptographic API
+- macOS: Similar to Linux (/dev/urandom)
+
+**Risk if Violated:**
+- Predictable keys enable brute-force attacks
+- Nonce collisions compromise GCM security
+- Complete system security failure
+
+**Mitigation:**
+- Use only on supported, modern operating systems (Linux 3.17+, Windows 7+, macOS 10.12+)
+- Avoid virtualized environments with poor entropy (check /proc/sys/kernel/random/entropy_avail on Linux)
+- Never use `random` module (pseudo-random, not cryptographically secure)
+
+**A2: System Clock Reasonably Accurate**
+
+**Assumption:** System time approximately correct (within hours/days, not years)
+
+**Scope:** Applies only to optional timestamp field in metadata; not security-critical
+
+**Risk if Violated:** Misleading timestamps in metadata; no security impact
+
+**A3: File System Integrity**
+
+**Assumption:** File system correctly stores and retrieves data without corruption
+
+**Justification:** Modern file systems (ext4, NTFS, APFS) designed for data integrity with journaling, checksums
+
+**Risk if Violated:**
+- File corruption could cause decryption failures
+- Authentication tags detect tampering/corruption (system rejects corrupted data)
+- No silent corruption (fails safely)
+
+**Mitigation:**
+- Users should employ file system integrity features (ZFS checksums, RAID, backups)
+- Authentication tags provide cryptographic integrity verification
+
+**A4: User Has Appropriate File System Permissions**
+
+**Assumption:** User can read source files, write to output directories
+
+**Justification:** System checks permissions and reports errors
+
+**Risk if Violated:** Operations fail with clear error messages (permission denied); no security impact
+
+**A5: Python Interpreter Trustworthy**
+
+**Assumption:** Python runtime not compromised or backdoored
+
+**Justification:** Users install Python from official sources (python.org, OS repositories)
+
+**Risk if Violated:** Compromised runtime could leak keys, modify cryptographic operations; applies to ALL Python software
+
+**Mitigation:**
+- Install Python from official sources only
+- Verify download signatures/checksums
+- Keep Python updated with security patches
+
+**A6: Cryptographic Libraries Correctly Implemented**
+
+**Assumption:** PyCryptodome and PyNaCl provide secure, correct implementations of AES and XChaCha20
+
+**Justification:**
+- Both libraries widely used in production systems
+- Regular security audits and peer review
+- Active maintenance with prompt security updates
+- Open-source nature enables independent verification
+
+**Risk if Violated:** Algorithmic vulnerabilities; affects all users of these libraries
+
+**Mitigation:**
+- Monitor library security advisories
+- Update dependencies when security patches released
+- Use specific versions (pinning) to avoid unexpected breaking changes
+
+**A7: Adequate Disk Space Available**
+
+**Assumption:** Sufficient disk space for encrypted files (approximately same size as originals)
+
+**Justification:** System can check available space before operations; OS reports errors if exhausted
+
+**Risk if Violated:** Partial file writes; operations fail with error messages
+
+**Mitigation:**
+- Check disk space before operations
+- Use temporary files, rename on success (atomic operations)
+- Clean up temporary files on failure
+
+**A8: No Active Adversary on Local System**
+
+**Assumption:** Local system not compromised by malware, rootkits, or other attackers with system-level access
+
+**Justification:** If local system compromised, attacker can:
+- Read keys from memory during operations
+- Modify code or libraries
+- Install keyloggers
+- Access plaintext files before encryption
+- No software-only solution can protect against compromised OS
+
+**Scope:** System protects data at rest (encrypted files) and in transit (if transferred); cannot protect against active attacks on local system
+
+**User Responsibility:** Maintain secure, updated system with antivirus, firewalls, and good security practices
+
+**3.9.2 External Dependencies**
+
+**Software Dependencies:**
+
+**D1: Python Runtime (Version 3.8+)**
+
+**Dependency Type:** Critical (system cannot function without Python)
+
+**Version Requirements:**
+- Minimum: Python 3.8 (first version with required features)
+- Recommended: Python 3.10+ (tested, stable)
+- Maximum tested: Python 3.11 (future versions expected compatible)
+
+**Purpose:** Execute application code, provide standard library
+
+**Availability:** Free download from python.org or OS package managers
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt install python3.10
+
+# Windows
+# Download installer from python.org
+
+# macOS
+brew install python@3.10
+```
+
+**Risk:** Python interpreter vulnerabilities affect system
+
+**Mitigation:** Keep Python updated with security patches
+
+**D2: PyCryptodome Library (Version 3.19.0)**
+
+**Dependency Type:** Critical (provides AES implementation)
+
+**Purpose:** AES-256-GCM encryption and decryption
+
+**License:** BSD 2-Clause (permissive open-source)
+
+**Installation:** `pip install pycryptodome==3.19.0`
+
+**Version Pinning Rationale:**
+- Ensures reproducibility
+- Prevents breaking API changes
+- Allows controlled updates after security review
+
+**Sub-Dependencies:**
+- C compiler (optional, for performance acceleration)
+- Python development headers (for C extension build)
+
+**Alternative:** Falls back to pure Python if C compilation unavailable (slower but functional)
+
+**D3: PyNaCl Library (Version 1.5.0)**
+
+**Dependency Type:** Critical (provides XChaCha20 implementation)
+
+**Purpose:** XChaCha20-Poly1305 authenticated encryption
+
+**License:** Apache 2.0 (permissive open-source)
+
+**Installation:** `pip install PyNaCl==1.5.0`
+
+**Sub-Dependencies:**
+- libsodium (C library, automatically bundled with PyNaCl)
+- cffi (Python C Foreign Function Interface)
+
+**Advantage:** libsodium widely audited, high-performance C implementation
+
+**D4: Matplotlib Library (Version 3.7.1)**
+
+**Dependency Type:** Optional (only for performance visualization)
+
+**Purpose:** Generate performance graphs (PNG images)
+
+**Installation:** `pip install matplotlib==3.7.1`
+
+**System Works Without:** Core encryption/decryption functions unaffected if matplotlib unavailable
+
+**Sub-Dependencies:**
+- NumPy (numerical computing library)
+- Various image backends (Pillow, etc.)
+
+**When Required:** Only when running `visualize_results.py` for graph generation
+
+**Operating System Dependencies:**
+
+**D5: Secure Random Number Generator**
+
+**Dependency Type:** Critical (security foundation)
+
+**OS Implementations:**
+- **Linux:** /dev/urandom (kernel CSPRNG)
+- **Windows:** CryptGenRandom (Windows Crypto API)
+- **macOS:** /dev/urandom (similar to Linux)
+
+**Accessed Via:** Python `os.urandom()` or `secrets` module
+
+**Requirement:** Modern OS with properly seeded entropy pool
+
+**Minimum OS Versions:**
+- Linux: Kernel 3.17+ (improved /dev/urandom)
+- Windows: Windows 7+ (CryptGenRandom available)
+- macOS: 10.12+ (Sierra and later)
+
+**D6: File System**
+
+**Dependency Type:** Critical (data persistence)
+
+**Requirements:**
+- Support for binary file I/O
+- Directory creation and traversal
+- File permissions (read/write/execute)
+
+**Compatible File Systems:**
+- ext4, ext3, XFS, Btrfs (Linux)
+- NTFS, FAT32 (Windows)
+- APFS, HFS+ (macOS)
+
+**Features Used:**
+- Sequential file read/write
+- Random access (for streaming large files)
+- Atomic file operations (write to temporary, rename to final)
+
+**D7: Command-Line Shell**
+
+**Dependency Type:** Required (user interaction)
+
+**Compatible Shells:**
+- bash, zsh, fish (Linux/macOS)
+- cmd.exe, PowerShell (Windows)
+- Any terminal emulator with text I/O
+
+**Requirements:**
+- Text input/output streams (stdin, stdout, stderr)
+- Process execution
+- Environment variables
+- Exit codes
+
+**Development Tool Dependencies (Not Required for Users):**
+
+**D8: Git (Version 2.0+)**
+
+**Dependency Type:** Development only
+
+**Purpose:** Version control, collaboration
+
+**Users Don't Need:** Git not required to run encryption system
+
+**D9: VS Code / Text Editor**
+
+**Dependency Type:** Development only
+
+**Purpose:** Code editing
+
+**Users Don't Need:** No IDE required to use system
+
+**Dependency Management Strategy:**
+
+**Version Pinning:**
+- `requirements.txt` specifies exact versions
+- Prevents breaking changes from unexpected updates
+- Enables reproducible installations
+
+**Virtual Environments:**
+- Isolate project dependencies from system Python
+- Prevent conflicts with other Python projects
+- Enable side-by-side installations of different versions
+
+**Update Policy:**
+- Monitor security advisories for dependencies
+- Update to patched versions when vulnerabilities discovered
+- Test thoroughly before updating version pins
+- Document breaking changes in release notes
+
+**Dependency Risks and Mitigations:**
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Library vulnerability | Security compromise | Monitor advisories, update promptly |
+| Breaking API change | System fails | Version pinning, controlled updates |
+| Dependency unavailable | Cannot install | Mirror dependencies, bundle if needed |
+| Incompatible versions | Import errors | Specify exact versions in requirements.txt |
+| Supply chain attack | Malicious code | Verify package signatures, use trusted repositories |
+
+**Dependency Tree:**
+
+```
+hybrid-encryption-system
+├── Python 3.8+ (required)
+│   └── Standard Library
+├── PyCryptodome 3.19.0 (required)
+│   └── [Optional: C compiler for acceleration]
+├── PyNaCl 1.5.0 (required)
+│   ├── cffi (auto-installed)
+│   └── libsodium (bundled)
+└── Matplotlib 3.7.1 (optional)
+    ├── NumPy (auto-installed)
+    └── Pillow (auto-installed)
+```
+
+**Installation Verification:**
+
+```bash
+# Verify all dependencies installed correctly
+python -c "import Crypto; import nacl; print('✓ Core dependencies installed')"
+python -c "import matplotlib; print('✓ Optional dependencies installed')"
+```
+
+**Contingency Plans:**
+
+**If PyCryptodome unavailable:** Cannot proceed; AES implementation critical
+
+**If PyNaCl unavailable:** Cannot proceed; XChaCha20 implementation critical
+
+**If Matplotlib unavailable:** Performance testing still works; graphs not generated (acceptable degradation)
+
+## 3.10 Specific Requirements
+
+This section provides detailed, testable requirements organized by category.
+
+**3.10.1 Functional Requirements (Detailed Specifications)**
+
+**FR-AES-001: AES Key Generation**
+- **Requirement:** System shall generate 256-bit AES keys using cryptographically secure random number generator
+- **Input:** None (automatic)
+- **Output:** 32-byte random key
+- **Source:** `os.urandom(32)` or `secrets.token_bytes(32)`
+- **Test:** Generate 1000 keys, verify all 32 bytes, verify all unique
+- **Priority:** Critical
+
+**FR-AES-002: AES File Encryption**
+- **Requirement:** System shall encrypt files using AES-256 in GCM mode
+- **Input:** File path, 32-byte key
+- **Processing:** Generate 16-byte nonce, encrypt with AES-GCM, compute 16-byte tag
+- **Output:** Encrypted file (nonce + tag + ciphertext)
+- **Test:** Encrypt known plaintext, verify ciphertext different, verify tag computed
+- **Priority:** Critical
+
+**FR-AES-003: AES File Decryption**
+- **Requirement:** System shall decrypt AES-GCM encrypted files with authentication
+- **Input:** Encrypted file, 32-byte key
+- **Processing:** Extract nonce and tag, decrypt ciphertext, verify tag
+- **Output:** Original plaintext if tag valid; error if tag invalid
+- **Test:** Decrypt and verify matches original; tamper with tag, verify rejection
+- **Priority:** Critical
+
+**FR-XC-001: XChaCha20 Master Key Generation**
+- **Requirement:** System shall generate 256-bit XChaCha20 master keys
+- **Input:** None (automatic)
+- **Output:** 32-byte random key
+- **Source:** `nacl.utils.random(nacl.secret.SecretBox.KEY_SIZE)`
+- **Test:** Generate 1000 keys, verify all 32 bytes, verify all unique
+- **Priority:** Critical
+
+**FR-XC-002: XChaCha20 Key Encryption**
+- **Requirement:** System shall encrypt AES keys using XChaCha20-Poly1305
+- **Input:** 32-byte AES key, 32-byte master key
+- **Processing:** Generate 24-byte nonce, encrypt with XChaCha20, compute 16-byte Poly1305 tag
+- **Output:** 72-byte encrypted key package
+- **Test:** Encrypt key, verify output 72 bytes, verify nonce 24 bytes
+- **Priority:** Critical
+
+**FR-XC-003: XChaCha20 Key Decryption**
+- **Requirement:** System shall decrypt encrypted keys with authentication
+- **Input:** 72-byte encrypted key package, 32-byte master key
+- **Processing:** Decrypt using master key, verify Poly1305 tag
+- **Output:** Original 32-byte AES key if tag valid; error if invalid
+- **Test:** Decrypt and verify matches original; tamper with tag, verify rejection
+- **Priority:** Critical
+
+**FR-META-001: Metadata Creation**
+- **Requirement:** System shall create JSON metadata with required fields
+- **Fields:** original_filename, encrypted_file, key_file, master_key (hex), file_size
+- **Format:** Valid JSON with UTF-8 encoding, 2-space indentation
+- **Output:** .meta file
+- **Test:** Create metadata, parse JSON, verify all fields present and valid
+- **Priority:** High
+
+**FR-META-002: Metadata Validation**
+- **Requirement:** System shall validate metadata before decryption
+- **Checks:** Valid JSON syntax, required fields present, master_key valid hex (64 chars), file_size positive integer
+- **Output:** Boolean (valid/invalid) with error message if invalid
+- **Test:** Valid metadata passes; missing field fails; invalid hex fails
+- **Priority:** High
+
+**FR-CLI-001: Encrypt Command**
+- **Requirement:** CLI shall parse encrypt command with arguments
+- **Syntax:** `cli.py encrypt -f FILE [-o OUTPUT] [-y] [-s]`
+- **Validation:** File exists, output directory writable
+- **Output:** Success message with file locations or error message
+- **Test:** Valid file encrypts; non-existent file shows error
+- **Priority:** Medium
+
+**FR-CLI-002: Decrypt Command**
+- **Requirement:** CLI shall parse decrypt command with arguments
+- **Syntax:** `cli.py decrypt -m METADATA [-o OUTPUT]`
+- **Validation:** Metadata file exists, valid JSON
+- **Output:** Success message with decrypted file location or error
+- **Test:** Valid metadata decrypts; invalid metadata shows error
+- **Priority:** Medium
+
+**FR-CLI-003: Info Command**
+- **Requirement:** CLI shall display system information
+- **Syntax:** `cli.py info`
+- **Output:** Formatted text with algorithms, features, examples
+- **Test:** Execute command, verify output contains expected information
+- **Priority:** Low
+
+**3.10.2 Performance Requirements (Quantified)**
+
+**PR-001: Encryption Throughput**
+- **Requirement:** Encryption throughput shall exceed 50 MB/s on standard hardware
+- **Test Hardware:** Intel Core i5 / AMD Ryzen 5, 8GB RAM, SSD
+- **Measurement:** Average throughput for 10MB, 50MB, 100MB files
+- **Acceptance:** 90% of test runs meet threshold
+- **Priority:** Medium
+
+**PR-002: Decryption Throughput**
+- **Requirement:** Decryption throughput shall exceed 50 MB/s
+- **Measurement:** Same as PR-001
+- **Rationale:** Symmetric operations should have similar performance
+- **Priority:** Medium
