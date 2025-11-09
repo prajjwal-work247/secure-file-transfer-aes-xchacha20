@@ -455,3 +455,1393 @@ The proposed hybrid symmetric encryption system addresses these gaps by:
 - Focusing on practical operational security rather than purely theoretical optimization
 
 This system occupies a unique position: more sophisticated than single-algorithm tools, yet simpler than full PKI-based solutions; compliant with regulatory standards while incorporating modern cryptographic techniques.
+
+## 1.5 Proposed System
+
+**System Architecture Overview**
+
+The system comprises four primary architectural components operating in a layered design:
+
+**Component 1: AES-256-GCM File Encryption Module**
+
+Responsible for encrypting and decrypting file content using the Advanced Encryption Standard.
+
+**Technical Specifications:**
+- **Algorithm:** AES-256 (Rijndael block cipher with 256-bit key)
+- **Mode of Operation:** GCM (Galois/Counter Mode) providing authenticated encryption
+- **Key Generation:** Cryptographically secure random 256-bit keys via OS entropy source
+- **Nonce Generation:** Random 128-bit nonces for each encryption operation
+- **Authentication:** 128-bit authentication tags computed over ciphertext
+- **Implementation:** PyCryptodome library version 3.19.0
+- **Performance:** Hardware acceleration via AES-NI when available
+
+**Functionality:**
+- `generate_key()`: Produces 32-byte random encryption keys
+- `encrypt_file(input_path, output_path, key)`: Encrypts file content, returns nonce and authentication tag
+- `decrypt_file(input_path, output_path, key)`: Decrypts file content with integrity verification
+
+**Component 2: XChaCha20-Poly1305 Key Encryption Module**
+
+Responsible for encrypting AES keys to provide an additional security layer.
+
+**Technical Specifications:**
+- **Algorithm:** XChaCha20 stream cipher (extended-nonce variant of ChaCha20)
+- **Authentication:** Poly1305 message authentication code
+- **Key Size:** 256 bits (32 bytes)
+- **Nonce Size:** 192 bits (24 bytes) - extended from standard 96-bit nonces
+- **Implementation:** PyNaCl library version 1.5.0 wrapping libsodium
+- **Output Size:** Fixed 72 bytes (24-byte nonce + 32-byte encrypted key + 16-byte tag)
+
+**Functionality:**
+- `generate_master_key()`: Produces 32-byte XChaCha20 master keys
+- `encrypt_key(aes_key, master_key)`: Encrypts AES key, automatically generating nonce
+- `decrypt_key(encrypted_key, master_key)`: Decrypts and verifies AES key
+- `save_encrypted_key(data, path)`: Writes encrypted key to file
+- `load_encrypted_key(path)`: Reads encrypted key from file
+
+**Component 3: Hybrid Integration Controller**
+
+Orchestrates the complete encryption and decryption workflow, coordinating both encryption modules.
+
+**Encryption Workflow:**
+1. Generate random 256-bit AES key using secure RNG
+2. Encrypt file content with AES-256-GCM, producing encrypted file and authentication tag
+3. Generate random 256-bit XChaCha20 master key
+4. Encrypt AES key using XChaCha20-Poly1305
+5. Create metadata JSON containing: original filename, file paths, master key, file size
+6. Save encrypted file (.enc), encrypted key (.key), and metadata (.meta)
+
+**Decryption Workflow:**
+1. Load and parse metadata file
+2. Extract XChaCha20 master key from metadata
+3. Load encrypted AES key from .key file
+4. Decrypt AES key using XChaCha20 master key (verify Poly1305 tag)
+5. Load encrypted file content
+6. Decrypt file using recovered AES key (verify GCM tag)
+7. Save decrypted file with original filename
+8. Securely erase cryptographic keys from memory
+
+**Security Properties:**
+- **Fail-Safe Design:** Authentication failure aborts operation immediately; no unauthenticated data output
+- **Key Separation:** AES keys and master keys are cryptographically independent
+- **Integrity Verification:** Dual-layer authentication (GCM + Poly1305) detects tampering
+- **Automated Cleanup:** Temporary keys cleared from memory after operations
+
+**Component 4: Command-Line Interface**
+
+Provides user-facing interaction through three primary commands.
+
+**Command 1: encrypt**
+- **Syntax:** `python cli.py encrypt -f FILE [-o OUTPUT_DIR] [-y] [-s]`
+- **Function:** Encrypts specified file using hybrid approach
+- **Options:**
+  - `-f, --file`: File to encrypt (required)
+  - `-o, --output`: Output directory (default: "encrypted")
+  - `-y, --yes`: Skip confirmation prompt
+  - `-s, --save-key`: Save master key to separate file for backup
+- **Output:** Creates .enc, .key, and .meta files
+
+**Command 2: decrypt**
+- **Syntax:** `python cli.py decrypt -m METADATA [-o OUTPUT_DIR]`
+- **Function:** Decrypts file using metadata reference
+- **Options:**
+  - `-m, --metadata`: Metadata file path (required)
+  - `-o, --output`: Output directory (default: "decrypted")
+- **Output:** Restores original file with integrity verification
+
+**Command 3: info**
+- **Syntax:** `python cli.py info`
+- **Function:** Displays system capabilities and usage information
+- **Output:** Algorithm details, security features, usage examples
+
+**Figure 1.1: Hybrid Encryption System Architecture**
+
+```
+┌─────────────────────────────────────────────────────┐
+│          COMMAND-LINE INTERFACE (CLI)               │
+│  Commands: encrypt, decrypt, info                   │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│      HYBRID INTEGRATION CONTROLLER                  │
+│  Orchestrates encryption/decryption workflow        │
+└──────────┬──────────────────────────┬───────────────┘
+           │                          │
+           ▼                          ▼
+┌──────────────────────┐    ┌──────────────────────┐
+│  AES-256-GCM         │    │  XChaCha20-Poly1305  │
+│  File Encryption     │    │  Key Encryption      │
+│                      │    │                      │
+│ • PyCryptodome 3.19  │    │ • PyNaCl 1.5.0       │
+│ • 256-bit keys       │    │ • 256-bit keys       │
+│ • 128-bit nonces     │    │ • 192-bit nonces     │
+│ • Hardware accel     │    │ • Software optimized │
+└──────────┬───────────┘    └──────────┬───────────┘
+           │                          │
+           ▼                          ▼
+    ┌────────────┐            ┌────────────┐
+    │ Encrypted  │            │ Encrypted  │
+    │ File (.enc)│            │ Key (.key) │
+    └────────────┘            └────────────┘
+           │                          │
+           └──────────┬───────────────┘
+                      ▼
+              ┌──────────────┐
+              │  Metadata    │
+              │  (.meta)     │
+              └──────────────┘
+```
+
+**File Format Specifications**
+
+**Encrypted File Format (.enc):**
+```
+Byte Offset | Content              | Size
+------------|----------------------|--------
+0-15        | AES-GCM Nonce        | 16 bytes
+16-31       | Authentication Tag   | 16 bytes
+32-EOF      | Encrypted Content    | Variable
+```
+
+**Encrypted Key Format (.key):**
+```
+Byte Offset | Content              | Size
+------------|----------------------|--------
+0-23        | XChaCha20 Nonce      | 24 bytes
+24-55       | Encrypted AES Key    | 32 bytes
+56-71       | Poly1305 Tag         | 16 bytes
+Total:                              72 bytes (fixed)
+```
+
+**Metadata Format (.meta - JSON):**
+```json
+{
+  "original_filename": "document.pdf",
+  "encrypted_file": "encrypted/document.pdf.enc",
+  "key_file": "encrypted/document.pdf.key",
+  "master_key": "a1b2c3d4e5f6...",
+  "file_size": 1048576
+}
+```
+
+**Technical Implementation Details**
+
+**Programming Language:** Python 3.10+
+- Chosen for: extensive library support, rapid development, cross-platform compatibility, strong cryptographic ecosystem
+
+**Cryptographic Libraries:**
+- **PyCryptodome:** Pure Python with optional C acceleration; BSD-licensed; regularly maintained
+- **PyNaCl:** Python bindings for libsodium (high-performance C library); Apache-licensed
+
+**Key Management Strategy:**
+- All keys generated using OS cryptographic random number generators
+- AES keys exist only in memory during operations (not stored unencrypted)
+- Master keys stored in metadata for user convenience (metadata must be protected)
+- Automatic key generation eliminates user error in key creation
+
+**Security Analysis**
+
+**Confidentiality:** 256-bit keys provide ~2^256 security level against brute force (computationally infeasible with current and foreseeable technology)
+
+**Integrity:** Authenticated encryption at both layers detects tampering; modified ciphertext fails authentication and triggers operation abort
+
+**Nonce Collision Resistance:** XChaCha20's 192-bit nonce provides 2^96 times larger space than AES-GCM; collision probability negligible even for billions of operations
+
+**Defense in Depth:** Two independent encryption algorithms; compromise of one does not immediately expose the other layer
+
+**Forward Secrecy (Limited):** Users can delete metadata after securely transmitting master key through separate channel, preventing retroactive decryption if metadata subsequently compromised
+
+**Advantages Over Existing Systems**
+
+1. **Addresses Nonce Reuse Risk:** Extended nonce space for key encryption reduces operational vulnerability
+2. **Algorithmic Diversity:** Two encryption algorithms provide defense against algorithm-specific failures
+3. **Compliance Maintained:** AES for bulk encryption satisfies FIPS requirements
+4. **Performance Balanced:** Hardware acceleration for bulk data, efficient software implementation for key operations
+5. **Usability Enhanced:** Automated key management, metadata-based decryption, clear CLI
+6. **Transparency Provided:** Open-source implementation enables security auditing
+
+**Limitations and Scope**
+
+The current implementation deliberately excludes certain features to maintain project scope:
+- No network file transfer (local encryption only)
+- No graphical user interface (CLI only)
+- No multi-user access control or shared key management
+- No cloud storage integration
+- No post-quantum cryptographic algorithms
+- Limited to Python runtime environments
+
+These limitations do not diminish core functionality but represent areas for future enhancement.
+
+## 1.6 Features of the Project
+
+This section enumerates specific features implemented in the system, demonstrating functionality and technical capabilities.
+
+**Feature 1: Dual-Layer Hybrid Encryption Architecture**
+
+The system implements two encryption layers with complementary algorithms serving distinct roles.
+
+**Description:**
+- **Primary Layer:** AES-256-GCM encrypts file content (leverages hardware acceleration, complies with standards)
+- **Secondary Layer:** XChaCha20-Poly1305 encrypts AES keys (extended nonce space, software performance)
+- **Independence:** Each layer uses separate keys; compromise of one layer requires additional effort to compromise the other
+
+**Benefit:** Defense in depth through algorithmic diversity; operational resilience through extended nonce space for critical key operations
+
+**Feature 2: Automated Cryptographic Key Generation**
+
+Users need not manually create or handle cryptographic keys.
+
+**Description:**
+- System automatically generates all required keys using cryptographically secure random number generators
+- OS entropy sources accessed via Python `secrets` module or `os.urandom()`
+- Key lengths conform to NIST recommendations (256 bits minimum)
+- No user interaction required for key creation
+
+**Benefit:** Eliminates common user errors (weak passwords, insufficient randomness, key reuse); ensures cryptographic strength
+
+**Feature 3: Authenticated Encryption at All Layers**
+
+Both encryption layers provide integrity protection, detecting tampering.
+
+**Description:**
+- **AES-GCM:** Galois/Counter Mode computes authentication tag over ciphertext; decryption verifies tag before outputting plaintext
+- **XChaCha20-Poly1305:** Poly1305 MAC authenticates encrypted keys
+- **Fail-Safe:** Authentication failure causes immediate operation abort without outputting unverified data
+- **Constant-Time Comparison:** Tag verification uses timing-attack-resistant comparison
+
+**Benefit:** Protects against active attacks (tampering, forgery); maintains data integrity
+
+**Feature 4: Extended Nonce Space for Enhanced Security**
+
+XChaCha20 employs 192-bit nonces, dramatically larger than standard implementations.
+
+**Description:**
+- Standard AES-GCM: 96-bit nonces (2^96 possible values)
+- XChaCha20: 192-bit nonces (2^192 possible values)
+- Collision probability reduced by factor of 2^96
+- Random nonce generation safe even with billions of operations
+
+**Benefit:** Mitigates nonce collision risks; enables stateless operation without counter coordination
+
+**Feature 5: Modular Architecture with Independent Components**
+
+System organized as separate, testable modules with clear interfaces.
+
+**Description:**
+- **Module 1:** `aes_encryption.py` - AES operations only
+- **Module 2:** `xchacha20_encryption.py` - XChaCha20 operations only
+- **Module 3:** `hybrid_encryption.py` - Integration logic
+- **Module 4:** `cli.py` - User interface
+- Each module includes self-test functionality for validation
+
+**Benefit:** Facilitates independent testing, debugging, and future enhancement; enables component reuse
+
+**Feature 6: Command-Line Interface with Multiple Operations**
+
+User-friendly CLI providing three primary commands with Unix-style conventions.
+
+**Description:**
+- **encrypt:** Syntax follows standard CLI patterns with flags (-f, -o, -y)
+- **decrypt:** Simplified operation requiring only metadata file reference
+- **info:** Self-documenting system displaying capabilities and usage
+- **Help:** `--help` flag provides comprehensive usage information
+- **Error Handling:** Clear, actionable error messages for common failure modes
+
+**Benefit:** Accessible to technical users; scriptable for automation; follows familiar interface patterns
+
+**Feature 7: Metadata-Based Decryption**
+
+Single metadata file contains all information needed for decryption.
+
+**Description:**
+- Metadata stored as human-readable JSON
+- Contains: original filename, file paths, master key, file size
+- Users provide single file for decryption (no manual key management)
+- Metadata can be backed up, transmitted, or stored separately from encrypted files
+
+**Benefit:** Simplifies decryption workflow; reduces user error; enables flexible key distribution strategies
+
+**Feature 8: Streaming Encryption for Large Files**
+
+Files processed in chunks to prevent memory exhaustion.
+
+**Description:**
+- Chunk-based processing for files exceeding memory capacity
+- Constant memory footprint regardless of file size
+- Suitable for multi-gigabyte files on systems with limited RAM
+- Maintains performance through buffered I/O
+
+**Benefit:** Enables encryption of arbitrarily large files; prevents out-of-memory errors
+
+**Feature 9: Comprehensive Integrity Verification**
+
+All operations validate data integrity through authentication.
+
+**Description:**
+- Decryption includes mandatory authentication tag verification
+- Tampered ciphertext detected and operation aborted
+- No partial or unverified plaintext ever output to user
+- Test suite confirms integrity preservation (original and decrypted files match exactly)
+
+**Benefit:** Cryptographic guarantee of data integrity; protects against active attacks
+
+**Feature 10: Cross-Platform Compatibility**
+
+Implementation runs on multiple operating systems without modification.
+
+**Description:**
+- **Tested Platforms:** Ubuntu 22.04 (Linux), Windows 11
+- **Expected Support:** macOS 10.15+ (Python cross-platform compatibility)
+- Same codebase functions across platforms
+- Platform-independent file formats enable cross-platform encrypted file exchange
+
+**Benefit:** Wide deployment options; users on different OS can exchange encrypted files
+
+**Feature 11: Performance Benchmarking and Visualization**
+
+System includes comprehensive performance testing infrastructure.
+
+**Description:**
+- Automated benchmark suite tests multiple file sizes (1-100 MB)
+- Measures: encryption time, decryption time, throughput (MB/s)
+- Generates performance graphs using matplotlib (6 visualizations)
+- Results stored as JSON for reproducibility
+- Verification confirms integrity preservation (SHA-256 hash comparison)
+
+**Benefit:** Provides empirical performance data; enables optimization; validates system behavior
+
+**Feature 12: Version Control and Development Transparency**
+
+Complete development history maintained in Git repository.
+
+**Description:**
+- All code committed with descriptive messages
+- GitHub repository enables code review and collaboration
+- Commit history demonstrates iterative development process
+- Issue tracking and documentation maintained
+
+**Benefit:** Transparency enables security auditing; demonstrates learning process; facilitates collaboration
+
+**Feature 13: Open-Source Implementation**
+
+System built entirely with open-source tools and libraries.
+
+**Description:**
+- Python runtime (PSF license - open source)
+- PyCryptodome (BSD license - permissive)
+- PyNaCl (Apache 2.0 license - permissive)
+- No proprietary dependencies or closed-source components
+- Source code available for inspection, auditing, and modification
+
+**Benefit:** Security through transparency; no vendor lock-in; enables independent verification
+
+**Feature 14: Comprehensive Documentation**
+
+Multiple documentation layers support users and developers.
+
+**Description:**
+- Inline code comments explain implementation details
+- Function docstrings document parameters and behavior
+- README file provides installation and usage instructions
+- This comprehensive project report documents design and implementation
+- Performance test results and visualizations
+- User manual included in appendices
+
+**Benefit:** Supports understanding, maintenance, and future enhancement; facilitates evaluation
+
+**Summary of Key Features:**
+
+The system delivers a complete, functional file encryption solution addressing identified vulnerabilities in existing systems while maintaining usability and performance. Features emphasize security (dual-layer encryption, authentication, extended nonces), usability (automated key management, CLI, metadata-based decryption), and transparency (open source, comprehensive documentation, performance data).
+
+---
+
+# CHAPTER 2: REQUIREMENT ANALYSIS
+
+## 2.1 Feasibility Study
+
+Feasibility analysis evaluates whether the proposed system can be successfully developed and deployed given available resources, technical capabilities, constraints, and time limitations. This section assesses technical, operational, economic, schedule, and legal feasibility.
+
+**2.1.1 Technical Feasibility**
+
+**Question:** Can the system be implemented with available technology, libraries, and team expertise?
+
+**Analysis:**
+
+**Cryptographic Libraries Available:**
+
+Python ecosystem provides mature, well-maintained cryptographic libraries implementing required algorithms:
+
+- **PyCryptodome:** Active development (last update within months), extensive documentation, BSD-licensed, supports AES with all standard modes including GCM
+- **PyNaCl:** Wrapper for libsodium (highly-regarded C cryptographic library), Apache-licensed, implements XChaCha20-Poly1305 through simple SecretBox API
+- **Security:** Both libraries undergo regular security audits and maintain active user communities reporting vulnerabilities
+
+**Development Environment:**
+
+Required tools freely available across platforms:
+- Python interpreter (versions 3.8-3.11 tested and compatible)
+- Text editors / IDEs (VS Code, PyCharm, vim - team already familiar)
+- Git version control (standard development tool, team experienced)
+- Testing frameworks (Python unittest - standard library, no installation required)
+
+**Team Expertise:**
+
+- Both team members completed coursework in: Python programming, data structures, algorithms, computer networks
+- Prior projects involved Python development (smaller scope)
+- Cryptography concepts covered in Cyber Security curriculum
+- Linux/Windows command-line proficiency from system administration coursework
+
+**Algorithm Complexity Managed:**
+
+While cryptographic algorithms internally complex (AES involves substitution-permutation networks, Galois field mathematics; ChaCha20 uses ARX operations), library abstractions hide implementation details. Team needs understanding of:
+- Proper API usage (passing correct parameter types, handling return values)
+- Key management principles (generation, storage, secure erasure)
+- Security properties (authentication, nonce uniqueness requirements)
+- NOT required: Low-level algorithm implementation, mathematical proofs, custom cryptographic code
+
+**Integration Challenges:**
+
+Combining two encryption systems requires orchestration but involves well-defined steps:
+1. Encrypt file with AES → get encrypted file and key
+2. Encrypt key with XChaCha20 → get encrypted key
+3. Package outputs → create metadata file
+4. Reverse for decryption
+
+No novel protocols, distributed system coordination, or complex concurrent operations required.
+
+**Conclusion:** ✅ **Technically Feasible**
+
+Required libraries exist with good documentation. Team possesses necessary programming skills. Integration complexity within team capabilities. No exotic hardware or software requirements.
+
+**2.1.2 Operational Feasibility**
+
+**Question:** Will the system be usable by target audience in practical scenarios? Does it solve real problems users face?
+
+**Analysis:**
+
+**User Interface Appropriateness:**
+
+- Command-line interface familiar to target users (developers, system administrators, security professionals)
+- Three-command structure (encrypt, decrypt, info) minimizes learning curve
+- Follows Unix CLI conventions (flags like -f, -o; --help standard)
+- Output messages guide users through operations
+- Error messages indicate problems and suggest solutions
+
+**Target User Technical Level:**
+
+Primary users are technical professionals comfortable with:
+- Command-line operation
+- File paths and directory navigation
+- Basic encryption concepts (even if not cryptographic experts)
+- Following technical documentation
+
+**Key Management Automation:**
+
+Significant usability advantage over systems requiring manual key handling:
+- Users need not generate keys manually (error-prone)
+- No memorizing or manually entering keys during decryption
+- Metadata files simplify operation (single file contains all decryption information)
+- Reduces risk of key loss or mismanagement
+
+**Performance Adequacy:**
+
+Benchmarking demonstrates acceptable performance for typical use cases:
+- 1MB document: ~0.01 seconds encryption (imperceptible delay)
+- 100MB file: ~1.2 seconds encryption (acceptable for most scenarios)
+- Throughput ~87 MB/s sufficient for interactive use
+- No blocking operations preventing other system use
+
+**Portability Across Systems:**
+
+- Cross-platform operation (Linux, Windows, macOS) enables wide deployment
+- Encrypted files transferable between systems without compatibility issues
+- Same interface across platforms (no retraining when changing OS)
+
+**Integration Possibilities:**
+
+- CLI suitable for integration into scripts (backup automation, data pipeline encryption)
+- Standard input/output conventions enable Unix piping if extended
+- Exit codes indicate success/failure for automated error handling
+
+**Limitations for Non-Technical Users:**
+
+Current CLI-only interface may challenge non-technical users:
+- No graphical interface (point-and-click simplicity)
+- Requires command-line comfort
+- Error messages assume technical literacy
+
+However, target audience specification (technical professionals) aligns with CLI design.
+
+**Conclusion:** ✅ **Operationally Feasible for Target Audience**
+
+System usable by intended technical users. Automation reduces error potential. Performance acceptable for practical scenarios. Future GUI could broaden accessibility but current design appropriate for defined user base.
+
+**2.1.3 Economic Feasibility**
+
+**Question:** Is the project economically viable given budget and resource constraints? What are development and deployment costs?
+
+**Analysis:**
+
+**Development Costs: Zero Monetary Cost**
+
+- **Licensing:** All software components open source with permissive licenses (no fees)
+- **Development Tools:** Python (free), VS Code (free), Git (free)
+- **Libraries:** PyCryptodome (BSD), PyNaCl (Apache) - no licensing costs
+- **Cloud Services:** Not required; local development only
+- **Hardware:** Team members' existing laptops sufficient; no specialized equipment needed
+
+**Time Investment:**
+
+- Primary cost is team members' time (academic project context)
+- Estimated: 200-250 person-hours total across both team members over semester
+- No opportunity cost (project required for degree completion)
+
+**Deployment Costs: Minimal**
+
+- End users require only Python runtime and libraries (free downloads)
+- No server infrastructure, databases, or cloud services required
+- No subscription fees or usage restrictions
+- Bandwidth costs minimal (encrypted files similar size to originals; ~32 bytes overhead)
+
+**Maintenance Costs:**
+
+- Dependencies maintained by open-source communities (no support contracts)
+- Security updates provided free through library maintainers
+- No ongoing operational costs
+
+**Comparative Cost Analysis:**
+
+Alternative approaches and their costs:
+- **Commercial encryption tools:** $30-100 per user license (AxCrypt, Boxcryptor)
+- **Enterprise solutions:** $1000s for corporate deployments
+- **Custom development with proprietary libraries:** Licensing fees + development costs
+- **This project:** $0 monetary cost
+
+**Resource Availability:**
+
+- University provides: Internet connectivity, electricity, workspace
+- No specialized equipment rental or purchase required
+- No external consultant fees or expert hiring
+
+**Conclusion:** ✅ **Economically Feasible - Zero Budget Required**
+
+Project incurs no monetary costs. All resources freely available. Economic constraints do not limit project scope or quality. Academic setting provides time resources for development without financial compensation requirement.
+
+**2.1.4 Schedule Feasibility**
+
+**Question:** Can the project be completed within available timeframe (one semester)? Are milestones achievable?
+
+**Analysis:**
+
+**Available Timeline:**
+
+- Academic semester: ~16 weeks (November 2024 - March 2025)
+- Effective development time: ~14 weeks (accounting for exams, holidays)
+- Team size: 2 members (enables parallel work)
+
+**Complexity Assessment:**
+
+**Core functionality breakdown:**
+1. AES encryption module: ~2 weeks (research, implementation, testing)
+2. XChaCha20 module: ~1.5 weeks (similar to AES but simpler API)
+3. Integration controller: ~1 week (coordinate modules, metadata handling)
+4. CLI interface: ~1 week (argument parsing, user interaction)
+5. Performance testing: ~1 week (benchmark suite, graph generation)
+6. Documentation: ~2-3 weeks (inline comments, README, report writing)
+7. Buffer time: ~3-4 weeks (debugging, refinement, unexpected challenges)
+
+**Total estimated: ~12-13 weeks (within 14-week available time)**
+
+**Parallel Work Opportunities:**
+
+Modular architecture enables simultaneous development:
+- **Week 1-2:** Literature review (both), environment setup (both)
+- **Week 3-5:** Person 1 develops AES module; Person 2 develops XChaCha20 module (parallel)
+- **Week 6-7:** Integration (collaborative)
+- **Week 8:** CLI development (Person 2 leads)
+- **Week 9-10:** Testing and performance benchmarking (both)
+- **Week 11-14:** Documentation and report writing (both)
+
+**Risk Mitigation Factors:**
+
+- **Modular design:** Core functionality deliverable even if advanced features deferred
+- **Library dependency:** Not implementing cryptography from scratch (90% time savings)
+- **CLI vs GUI:** Command-line interface much faster to implement than graphical interface
+- **Iterative approach:** Working system at each milestone; can stop at any viable checkpoint
+
+**Milestone Deliverables:**
+
+- **Month 1:** Individual modules working independently
+- **Month 2:** Integrated hybrid system functional
+- **Month 3:** CLI complete, performance testing done
+- **Month 4:** Documentation complete, report submitted
+
+**Schedule Risks:**
+
+- **Library compatibility issues:** Mitigated by version pinning, early testing
+- **Debugging time:** Buffer time allocated (3-4 weeks)
+- **Team member unavailability:** Modular design enables independent work
+- **Scope creep:** Features clearly defined; "nice-to-haves" explicitly deferred
+
+**Conclusion:** ✅ **Schedule Feasible with Proper Planning**
+
+Timeline realistic for defined scope. Parallel work reduces calendar time. Modular architecture provides flexibility. Buffer time accommodates unexpected challenges. Project deliverable within semester timeframe.
+
+**2.1.5 Legal Feasibility**
+
+**Question:** Are there legal, regulatory, or intellectual property constraints preventing implementation or deployment?
+
+**Analysis:**
+
+**Export Control Regulations:**
+
+**Historical Context:**
+- Cryptographic software historically subject to export controls (classified as "munitions")
+- U.S. regulations evolved; publicly available cryptographic software generally exempt with notification
+
+**Current Status:**
+- Project uses standard, widely-deployed algorithms (AES, ChaCha20)
+- Implementation based on publicly available specifications (NIST FIPS 197, IETF RFCs)
+- Educational/research use generally protected
+- No novel cryptographic techniques that might trigger additional scrutiny
+
+**Relevant Regulations:**
+- U.S. Export Administration Regulations (EAR) - exemption for publicly available software
+- Wassenaar Arrangement - coordinates export controls but allows public domain cryptography
+
+**Conclusion:** Low risk for academic project using standard algorithms and open-source libraries.
+
+**Patent and Intellectual Property:**
+
+**Algorithm Patents:**
+- **AES:** Explicitly patent-free; NIST selected Rijndael partly for lack of patent restrictions
+- **ChaCha20:** Designed by Daniel J. Bernstein as public domain algorithm; no patent claims
+- **GCM Mode:** NIST-standardized mode; no patent restrictions for implementations following standard
+- **Poly1305:** Public domain MAC algorithm; no licensing concerns
+
+**Library Licenses:**
+- **PyCryptodome:** BSD 2-Clause License (permissive; allows use, modification, distribution)
+- **PyNaCl:** Apache License 2.0 (permissive; includes patent grant protecting users)
+- **Python:** Python Software Foundation License (permissive, GPL-compatible)
+
+**License Compatibility:**
+- All licenses mutually compatible
+- Permits use in academic projects
+- Enables future open-source release if desired
+- No viral copyleft requirements (unlike GPL for some projects)
+
+**Project Code Ownership:**
+- Code developed as academic project (educational purpose)
+- No employer IP claims (students, not employees)
+- No external funding with IP stipulations
+
+**Conclusion:** No patent obstacles. All dependencies use permissive open-source licenses.
+
+**Regulatory Compliance:**
+
+**Data Protection Regulations:**
+- Project provides encryption tool; does not collect/process user data
+- GDPR, CCPA, etc. not directly applicable (no data processing service)
+- Users responsible for complying with regulations when encrypting their data
+
+**Standards Compliance:**
+- AES implementation follows FIPS 197 specification
+- No formal FIPS 140-2 validation (requires commercial testing laboratory, costly)
+- Algorithms compliant with standards but implementation not certified
+
+**Academic Context Protection:**
+- Educational projects generally protected under academic freedom principles
+- Research and teaching exemptions in various regulations
+- Non-commercial nature reduces regulatory burden
+
+**Ethical Considerations:**
+
+**Dual Use Concerns:**
+- Encryption technology can be used for legitimate privacy or concealing illegal activities
+- However, encryption is fundamental human right per UN declarations
+- Legitimate uses vastly outnumber malicious uses
+- Many democracies enshrine encryption rights in law
+
+**Responsible Disclosure:**
+- Project documentation includes appropriate use guidance
+- No marketing toward malicious use cases
+- Emphasis on privacy, security, legitimate data protection
+
+**Transparency:**
+- Open-source nature enables security auditing
+- No hidden backdoors or intentional weaknesses
+- Aligns with cryptographic community values
+
+**Conclusion:** ✅ **Legally Feasible with Standard Academic Protections**
+
+No legal barriers identified for academic project using standard, publicly available algorithms and open-source libraries. Export controls generally exempt publicly available educational software. No patent restrictions. Ethical considerations addressed through responsible development and documentation.
+
+**Overall Feasibility Conclusion:**
+
+All feasibility dimensions indicate project viability:
+
+| Feasibility Type | Assessment | Risk Level |
+|------------------|------------|------------|
+| Technical | ✅ Feasible | Low |
+| Operational | ✅ Feasible | Low |
+| Economic | ✅ Feasible | Minimal |
+| Schedule | ✅ Feasible | Moderate |
+| Legal | ✅ Feasible | Low |
+
+**Overall:** ✅ **PROJECT FEASIBLE**
+
+Primary risks—cryptographic implementation errors—mitigated through use of established libraries. Schedule manageable with modular architecture. Zero monetary cost. Legal environment permissive for educational cryptographic projects. Project appropriate for academic timeframe with two-person team.
+
+## 2.2 Software Requirement Specification Document
+
+This section provides comprehensive requirements specification, defining functional and non-functional requirements, hardware and software needs, and constraints.
+
+**2.2.1 Functional Requirements**
+
+Functional requirements define specific behaviors and operations the system must perform.
+
+**FR1: AES-256-GCM File Encryption**
+
+- **Requirement ID:** FR1
+- **Priority:** High (Core functionality)
+- **Description:** System shall encrypt files using AES-256 in Galois/Counter Mode
+- **Input:** File path (any readable file), optional output directory
+- **Processing:**
+  1. Validate file exists and is readable
+  2. Generate 256-bit random encryption key using cryptographically secure RNG
+  3. Generate 128-bit random nonce (unique for each operation)
+  4. Read file content (streaming for large files)
+  5. Encrypt content with AES-256-GCM
+  6. Compute authentication tag over ciphertext
+- **Output:** Encrypted file containing: nonce (16 bytes) + tag (16 bytes) + ciphertext
+- **Success Criteria:** File encrypted successfully, authentication tag generated
+- **Failure Handling:** Display error message if file not found, not readable, or encryption fails
+
+**FR2: XChaCha20-Poly1305 Key Encryption**
+
+- **Requirement ID:** FR2
+- **Priority:** High (Core functionality)
+- **Description:** System shall encrypt AES keys using XChaCha20-Poly1305
+- **Input:** AES key (32 bytes exactly), optional output directory
+- **Processing:**
+  1. Validate input is 32 bytes
+  2. Generate 256-bit random master key
+  3. Generate 192-bit random nonce
+  4. Encrypt AES key with XChaCha20-Poly1305
+  5. Compute Poly1305 authentication tag
+- **Output:** Fixed-size encrypted key file (72 bytes): nonce (24B) + encrypted key (32B) + tag (16B)
+- **Success Criteria:** Key encrypted, authentication tag generated
+- **Failure Handling:** Display error if input invalid or encryption fails
+
+**FR3: Metadata Generation and Storage**
+
+- **Requirement ID:** FR3
+- **Priority:** High (Required for decryption)
+- **Description:** System shall generate metadata files containing decryption information
+- **Input:** Original filename, encrypted file path, key file path, master key, file size
+- **Processing:**
+  1. Create JSON object with required fields
+  2. Format with indentation for readability
+  3. Write to file with .meta extension
+- **Output:** JSON metadata file
+- **Success Criteria:** Valid JSON file created with all required fields
+- **Failure Handling:** Error if unable to write file
+
+**FR4: File Decryption with Integrity Verification**
+
+- **Requirement ID:** FR4
+- **Priority:** High (Core functionality)
+- **Description:** System shall decrypt files using metadata, verifying integrity at both layers
+- **Input:** Metadata file path, optional output directory
+- **Processing:**
+  1. Load and parse metadata (validate JSON format)
+  2. Extract master key from metadata
+  3. Load encrypted AES key from .key file
+  4. Decrypt AES key using XChaCha20 master key
+  5. Verify Poly1305 authentication tag; abort if invalid
+  6. Load encrypted file from .enc file
+  7. Decrypt file using recovered AES key
+  8. Verify GCM authentication tag; abort if invalid
+  9. Write decrypted content only if both tags valid
+- **Output:** Decrypted file with original filename
+- **Success Criteria:** File decrypted, both authentication tags verified, output matches original
+- **Failure Handling:** If any tag invalid, display error and DO NOT output plaintext
+
+**FR5: Command-Line Argument Parsing**
+
+- **Requirement ID:** FR5
+- **Priority:** Medium (Usability)
+- **Description:** System shall parse and validate command-line arguments
+- **Commands:**
+  - **encrypt:** `-f FILE [-o OUTPUT] [-y] [-s]`
+  - **decrypt:** `-m METADATA [-o OUTPUT]`
+  - **info:** No arguments
+- **Processing:**
+  1. Parse arguments using argparse library
+  2. Validate required arguments present
+  3. Apply default values for optional arguments
+  4. Validate file paths exist (for input files)
+- **Output:** Parsed arguments passed to appropriate function
+- **Success Criteria:** Arguments correctly parsed and validated
+- **Failure Handling:** Display usage help if arguments invalid
+
+**FR6: Automated Key Generation**
+
+- **Requirement ID:** FR6
+- **Priority:** High (Security requirement)
+- **Description:** System shall automatically generate cryptographically secure random keys
+- **Input:** None (automatic operation)
+- **Processing:**
+  1. Access OS random number generator (os.urandom() or secrets module)
+  2. Generate requested number of random bytes (32 for keys)
+  3. Return key material
+- **Output:** 256-bit (32-byte) random key
+- **Success Criteria:** Key generated with sufficient entropy
+- **Failure Handling:** Error if RNG unavailable (should never occur on modern OS)
+
+**FR7: Error Handling and User Feedback**
+
+- **Requirement ID:** FR7
+- **Priority:** Medium (Robustness)
+- **Description:** System shall handle errors gracefully with informative messages
+- **Error Scenarios:**
+  - File not found
+  - Permission denied
+  - Authentication failure (tampering)
+  - Invalid metadata format
+  - Insufficient disk space
+- **Processing:**
+  1. Catch exceptions at appropriate levels
+  2. Format error message with problem description and suggested action
+  3. Display to user via console output
+  4. Exit with appropriate error code
+- **Output:** Error message to stderr, non-zero exit code
+- **Success Criteria:** Errors handled without crashes, messages actionable
+
+**FR8: Integrity Verification Testing**
+
+- **Requirement ID:** FR8
+- **Priority:** High (Validation)
+- **Description:** System shall verify that decrypted files match originals exactly
+- **Input:** Original file, decrypted file
+- **Processing:**
+  1. Compute SHA-256 hash of original file
+  2. Compute SHA-256 hash of decrypted file
+  3. Compare hashes using constant-time comparison
+- **Output:** Pass/fail indication
+- **Success Criteria:** Hashes match (files identical)
+- **Failure Handling:** Report integrity failure if hashes differ
+
+**Table 2.3: Functional Requirements Summary**
+
+| Requirement ID | Description | Priority | Status |
+|----------------|-------------|----------|--------|
+| FR1 | AES-256-GCM file encryption | High | Implemented |
+| FR2 | XChaCha20 key encryption | High | Implemented |
+| FR3 | Metadata generation | High | Implemented |
+| FR4 | File decryption with verification | High | Implemented |
+| FR5 | CLI argument parsing | Medium | Implemented |
+| FR6 | Automated key generation | High | Implemented |
+| FR7 | Error handling | Medium | Implemented |
+| FR8 | Integrity verification | High | Implemented |
+
+**2.2.2 Non-Functional Requirements**
+
+Non-functional requirements define system qualities, constraints, and characteristics.
+
+**NFR1: Performance Requirements**
+
+- **Requirement ID:** NFR1
+- **Description:** System shall meet specified performance thresholds
+- **Metrics:**
+  - Encryption throughput: ≥ 50 MB/s on standard hardware (Intel i5/AMD Ryzen 5 equivalent, 8GB RAM)
+  - Decryption throughput: ≥ 50 MB/s (similar to encryption)
+  - Memory usage: ≤ 500 MB peak for any file size (streaming implementation)
+  - Startup time: ≤ 2 seconds from command invocation to first output
+  - Small file overhead: 1KB file encrypted in ≤ 100ms
+- **Measurement:** Python time module, average of multiple runs
+- **Justification:** Performance must be adequate for interactive use; users unwilling to wait minutes for moderate-size files
+
+**NFR2: Security Requirements**
+
+- **Requirement ID:** NFR2
+- **Description:** System shall implement cryptographic best practices
+- **Specifications:**
+  - Use cryptographically secure random number generators (os.urandom() or secrets module)
+  - Employ authenticated encryption at all layers (no encryption without authentication)
+  - Verify authentication tags before outputting plaintext (fail-safe design)
+  - Use minimum 256-bit keys (NIST recommendations for long-term security)
+  - Never store keys in plaintext (encrypt before any persistent storage)
+  - Employ constant-time comparison for authentication tags (prevent timing attacks)
+- **Validation:** Code review, security testing with tampered ciphertext
+- **Justification:** Cryptographic systems fail catastrophically from small errors; strict security requirements prevent vulnerabilities
+
+**NFR3: Reliability Requirements**
+
+- **Requirement ID:** NFR3
+- **Description:** System shall produce consistent, correct results
+- **Specifications:**
+  - Decrypted files shall match originals with 100% accuracy (bitwise identical)
+  - Operations shall be deterministic given same keys/nonces
+  - System shall handle interruptions gracefully (no data corruption)
+  - Temporary files shall be cleaned up after operations
+- **Measurement:** Hash comparison (SHA-256), repeated operation testing
+- **Justification:** Encryption system that corrupts data worse than no encryption; perfect reliability required
+
+**NFR4: Usability Requirements**
+
+- **Requirement ID:** NFR4
+- **Description:** System shall be accessible to target users (technical professionals)
+- **Specifications:**
+  - Command syntax follows standard CLI conventions (Unix-style flags)
+  - Help messages clearly explain usage with examples
+  - Error messages indicate problem cause and resolution steps
+  - Operations complete with clear success/failure indication
+  - Confirmation prompts prevent accidental data overwriting
+- **Measurement:** User testing, error message clarity assessment
+- **Justification:** Unusable security tools often abandoned or misused, compromising security
+
+**NFR5: Portability Requirements**
+
+- **Requirement ID:** NFR5
+- **Description:** System shall run on multiple operating systems
+- **Specifications:**
+  - Support Linux (Ubuntu 20.04+), Windows (10+), macOS (10.15+)
+  - Use cross-platform Python libraries only
+  - Handle platform-specific path separators (/ vs \)
+  - Binary file handling correct on all platforms
+  - Support Unicode filenames (UTF-8 encoding)
+- **Testing:** Run on Linux and Windows; verify encrypted files decrypt on both
+- **Justification:** Users employ diverse systems; cross-platform compatibility essential
+
+**NFR6: Maintainability Requirements**
+
+- **Requirement ID:** NFR6
+- **Description:** System shall be maintainable and extensible
+- **Specifications:**
+  - Code follows PEP 8 style guidelines (Python style standard)
+  - Functions include docstrings explaining purpose, parameters, returns
+  - Modules loosely coupled (low dependencies between components)
+  - Version control maintains complete development history
+  - Comprehensive documentation (inline comments, README, report)
+- **Measurement:** Code review, documentation completeness check
+- **Justification:** Academic project may require future modifications; maintainability facilitates extensions
+
+**NFR7: Compliance Requirements**
+
+- **Requirement ID:** NFR7
+- **Description:** System shall use standardized cryptographic algorithms
+- **Specifications:**
+  - AES implementation conforms to FIPS 197 specification
+  - GCM mode follows NIST SP 800-38D
+  - ChaCha20 conforms to RFC 8439
+  - Key sizes meet NIST recommendations (256-bit minimum)
+  - No custom cryptographic primitives (use established libraries)
+- **Validation:** Library documentation review, specification comparison
+- **Justification:** Custom cryptography prone to vulnerabilities; standards ensure peer review and correctness
+
+**Table 2.4: Non-Functional Requirements Summary**
+
+| Requirement ID | Category | Description | Priority |
+|----------------|----------|-------------|----------|
+| NFR1 | Performance | Throughput ≥50 MB/s, memory ≤500 MB | High |
+| NFR2 | Security | Cryptographic best practices | Critical |
+| NFR3 | Reliability | 100% accuracy, graceful failures | High |
+| NFR4 | Usability | Clear interface, helpful errors | Medium |
+| NFR5 | Portability | Cross-platform compatibility | Medium |
+| NFR6 | Maintainability | Clean code, documentation | Medium |
+| NFR7 | Compliance | Standard algorithms | High |
+
+**2.2.3 Hardware Requirements**
+
+**Table 2.1: Hardware Requirements**
+
+| Component | Minimum Specification | Recommended Specification |
+|-----------|----------------------|---------------------------|
+| **Processor** | Any modern CPU (x86-64 or ARM) | Intel Core i5 / AMD Ryzen 5 or better |
+| **RAM** | 512 MB available | 2 GB available |
+| **Storage** | 100 MB for software + space for encrypted files | 1 GB (for software, test files, results) |
+| **Network** | Not required (local operation) | Internet for initial library download |
+| **Display** | Text-capable terminal | Any (CLI operates in terminal) |
+
+**Rationale for Requirements:**
+- **Processor:** Pure Python implementation runs on any architecture; hardware acceleration (AES-NI) beneficial but not required
+- **RAM:** Streaming implementation prevents proportional memory growth with file size; 512MB sufficient for moderate files
+- **Storage:** Encrypted files approximately same size as originals (32-byte overhead negligible)
+- **Network:** System operates offline; network needed only for initial pip install of dependencies
+
+**2.2.4 Software Requirements**
+
+**Table 2.2: Software Requirements**
+
+| Component | Specification | Purpose |
+|-----------|---------------|---------|
+| **Operating System** | Linux (Ubuntu 20.04+), Windows 10+, macOS 10.15+ | Platform for execution |
+| **Python Runtime** | Version 3.8 or higher (3.10+ recommended) | Interpreter for application code |
+| **PyCryptodome** | Version 3.19.0 (exact version pinned) | AES-256-GCM implementation |
+| **PyNaCl** | Version 1.5.0 (exact version pinned) | XChaCha20-Poly1305 implementation |
+| **Matplotlib** | Version 3.7.1 (for visualization) | Performance graph generation |
+| **Git** | Version 2.0+ (development only) | Version control |
+
+**Installation Process:**
+
+```bash
+# Step 1: Install Python 3.10+
+# (Platform-specific: apt/brew/installer)
+
+# Step 2: Create virtual environment
+python3 -m venv venv
+
+# Step 3: Activate virtual environment
+source venv/bin/activate  # Linux/macOS
+venv\Scripts\activate     # Windows
+
+# Step 4: Install dependencies
+pip install -r requirements.txt
+```
+
+**requirements.txt Contents:**
+```
+pycryptodome==3.19.0
+PyNaCl==1.5.0
+matplotlib==3.7.1
+```
+
+**Dependency Rationale:**
+- **Version pinning:** Specific versions ensure reproducibility; prevents breaking changes from updates
+- **Minimal dependencies:** Only essential libraries included; reduces attack surface and installation complexity
+- **Permissive licenses:** All dependencies use BSD, Apache, or similar licenses permitting free use
+
+## 2.3 SDLC Model Used
+
+**Selected Model: Iterative Development with Incremental Delivery**
+
+This project employs an iterative development approach combining elements of incremental and agile methodologies. The model was selected for its suitability to cryptographic software development, academic project constraints, and two-person team dynamics.
+
+**2.3.1 Model Overview and Rationale**
+
+**Iterative Development Characteristics:**
+
+The iterative model divides development into multiple iterations (typically 1-3 weeks each), with each iteration producing a working increment of the system. Unlike waterfall development where each phase must complete before the next begins, iterations allow refinement based on testing feedback and evolving understanding.
+
+**Why Iterative Model for This Project:**
+
+1. **Risk Mitigation:** Cryptographic systems require careful validation; iterative development with continuous testing reduces risk of fundamental design flaws discovered late in development
+
+2. **Feedback Integration:** Each iteration produces working software enabling immediate testing and evaluation; findings inform subsequent iterations
+
+3. **Incremental Complexity:** System built from simple, validated components (individual encryption modules) toward complex integrated system; each stage builds on tested foundation
+
+4. **Team Collaboration:** Two-person team benefits from parallel development of independent modules (early iterations), then collaboration on integration (later iterations)
+
+5. **Academic Constraints:** Iterative model accommodates semester timeline with clear milestones; regular deliverables provide progress visibility for evaluation
+
+6. **Learning Curve:** Team learning cryptographic APIs and best practices during development; iterative approach allows incorporating lessons learned from early iterations into later work
+
+**Rejected Alternative Models:**
+
+**Waterfall Model:** Rejected due to inflexibility; cryptographic systems often require design adjustments based on testing; waterfall's sequential nature prevents iteration
+
+**Pure Agile/Scrum:** Rejected due to overhead inappropriate for two-person team and lack of continuous customer involvement in academic context; formal sprints, daily standups, and product owner role unnecessary
+
+**Spiral Model:** Rejected as overly complex for single-project, two-person context; extensive risk analysis and prototyping cycles introduce unnecessary overhead given use of established libraries
+
+**Figure 2.1: Iterative Development Model Phases**
+
+```
+┌──────────────┐
+│ Requirements │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│    Design    │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│Implementation│
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│   Testing    │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│  Evaluation  │
+└──────┬───────┘
+       │
+       ▼ (Repeat for next iteration)
+```
+
+**2.3.2 Development Phases and Iterations**
+
+**Phase 1: Planning and Initial Design (Week 1-2)**
+
+**Activities:**
+- Literature review on AES, XChaCha20, hybrid encryption approaches
+- Requirements definition (functional and non-functional)
+- Feasibility analysis
+- High-level architecture design
+- Development environment setup (Python, libraries, Git)
+- Repository initialization on GitHub
+
+**Deliverables:**
+- Project synopsis document
+- Architecture diagrams
+- Requirements specification
+- Configured development environment
+
+**Team Organization:** Both members collaborate on research and planning
+
+**Phase 2: Core Module Development (Week 3-6)**
+
+**Iteration 2.1: AES Encryption Module (Weeks 3-4)**
+
+**Team Member 1 (Pragati) Tasks:**
+- Design AES encryption module interface
+- Research PyCryptodome API documentation
+- Implement file encryption with AES-256-GCM
+- Implement file decryption with authentication verification
+- Write unit tests for AES operations
+- Document module with docstrings
+
+**Deliverables:**
+- `aes_encryption.py` with complete functionality
+- Unit test suite demonstrating correctness
+- Performance measurements (baseline)
+
+**Iteration 2.2: XChaCha20 Key Encryption Module (Weeks 4-5)**
+
+**Team Member 2 (Prajjwal) Tasks:**
+- Design XChaCha20 encryption module interface
+- Research PyNaCl API documentation
+- Implement key encryption with XChaCha20-Poly1305
+- Implement key decryption with authentication
+- Write unit tests for key encryption operations
+- Document module
+
+**Deliverables:**
+- `xchacha20_encryption.py` with complete functionality
+- Unit test suite
+- Nonce size verification tests
+
+**Note:** Iterations 2.1 and 2.2 partially overlap (weeks 4-5), enabling parallel development
+
+**Phase 3: Integration and Hybrid System (Week 6-7)**
+
+**Activities (Both Members Collaborative):**
+- Design hybrid system architecture
+- Implement integration controller coordinating both modules
+- Develop encryption workflow (file → AES → key → XChaCha20)
+- Develop decryption workflow (reverse process)
+- Implement metadata generation and parsing
+- Integration testing with various file types and sizes
+- Error handling and edge case testing
+
+**Deliverables:**
+- `hybrid_encryption.py` with complete integration
+- Integration test suite
+- End-to-end functionality validated
+
+**Phase 4: User Interface Development (Week 8-9)**
+
+**Team Member 2 (Prajjwal) Leads:**
+- Design command-line interface
+- Implement argument parsing with argparse
+- Implement encrypt command with validation
+- Implement decrypt command
+- Implement info command
+- Input validation and error messages
+- Help documentation
+
+**Team Member 1 (Pragati) Supports:**
+- Review CLI design
+- Test CLI commands
+- Write usage documentation
+- Create examples
+
+**Deliverables:**
+- `cli.py` with complete interface
+- Usage documentation
+- Command examples and tutorials
+
+**Phase 5: Performance Testing and Optimization (Week 10-11)**
+
+**Team Member 1 (Pragati) Leads:**
+- Design performance test suite
+- Implement automated benchmarking across file sizes
+- Measure encryption/decryption times
+- Calculate throughput metrics
+- Identify performance bottlenecks
+- Optimize critical paths if necessary
+
+**Team Member 2 (Prajjwal) Supports:**
+- Create visualization script for results
+- Generate performance graphs with matplotlib
+- Analyze results
+- Prepare performance analysis section for report
+
+**Deliverables:**
+- `performance_test.py` automated benchmark suite
+- `visualize_results.py` graph generation
+- Performance data (JSON format)
+- Six visualization graphs
+- Performance analysis documentation
+
+**Phase 6: Documentation and Refinement (Week 12-15)**
+
+**Activities (Both Members):**
+- Code cleanup and refactoring
+- Comprehensive code documentation (docstrings, comments)
+- README file with installation and usage instructions
+- Project report writing (this document)
+- Final integration testing and validation
+- Presentation preparation
+
+**Task Distribution:**
+- **Pragati:** Chapters 1, 3, 5 (Introduction, System Design, Results)
+- **Prajjwal:** Chapters 2, 4, 6 (Requirements, Implementation, Conclusion)
+- **Both:** Abstract, Acknowledgements, References, Appendices
+
+**Deliverables:**
+- Complete project report (50-60 pages)
+- Polished, documented codebase
+- Presentation slides
+- Final GitHub repository with complete history
+
+**2.3.3 Development Practices and Tools**
+
+**Version Control Workflow:**
+
+**Branching Strategy:**
+- `main` branch for stable, tested code
+- `feature/*` branches for new features under development
+- Merge to main only after testing and review
+
+**Commit Practices:**
+- Frequent commits with descriptive messages (format: "Add feature: description")
+- Never commit sensitive data (keys, test credentials)
+- `.gitignore` excludes temporary files, venv, __pycache__
+
+**Collaboration:**
+- Pull requests for significant changes (enables code review)
+- Issues for tracking bugs and feature requests
+- GitHub Projects board for task management (optional)
+
+**Testing Strategy:**
+
+**Unit Testing:**
+- Each module includes independent test suite
+- Python unittest framework (standard library)
+- Test cases cover normal operation, edge cases, error conditions
+- Run tests after each modification: `python -m unittest discover`
+
+**Integration Testing:**
+- End-to-end tests for complete workflows
+- Test encrypt-decrypt cycles with various file types
+- Verify integrity (SHA-256 hash comparison)
+- Test error handling with invalid inputs
+
+**Performance Testing:**
+- Automated benchmark suite
+- Multiple file sizes (1, 5, 10, 25, 50, 100 MB)
+- Multiple iterations for statistical validity
+- Results visualization
+
+**Security Testing:**
+- Tampered ciphertext rejection tests
+- Nonce uniqueness verification
+- Key independence validation
+- Authentication failure handling
+
+**Code Quality Practices:**
+
+**Style Guidelines:**
+- PEP 8 Python style guide compliance
+- Consistent naming conventions (snake_case for functions/variables)
+- Maximum line length: 100 characters
+- Docstrings for all public functions (Google or NumPy style)
+
+**Code Review:**
+- Peer review between team members before merging
+- Focus areas: security-critical sections, error handling, API design
+- Checklist: functionality, readability, documentation, testing
+
+**Documentation:**
+- Inline comments for complex logic
+- Module-level docstrings explaining purpose
+- README with quick-start guide
+- This comprehensive report
+
+**2.3.4 Continuous Integration (Informal)**
+
+While formal CI/CD pipelines (GitHub Actions, Travis CI) not implemented for this academic project, informal continuous integration practices adopted:
+
+**Integration Frequency:**
+- Code integrated to main branch at least weekly
+- Both team members pull latest changes before starting new work
+- Conflicts resolved promptly when they arise
+
+**Automated Testing:**
+- Test suites run before each commit
+- Both members responsible for ensuring tests pass
+- Broken tests fixed immediately (don't commit broken code)
+
+**Build Validation:**
+- Verify system runs on both team members' machines (Ubuntu + Windows)
+- Check dependencies install correctly from requirements.txt
+- Test CLI commands function as expected
+
+**2.3.5 Outcome and Lessons Learned**
+
+**Model Effectiveness:**
+
+The iterative development model proved highly effective for this project:
+
+✅ **Risk Mitigation:** Early module development identified library API nuances; adjustments made before extensive integration work
+
+✅ **Incremental Progress:** Working system at each milestone provided confidence and motivation
+
+✅ **Parallel Development:** Modular architecture enabled simultaneous work in Phase 2, reducing calendar time
+
+✅ **Flexibility:** Could adjust priorities when challenges arose (e.g., spending more time on performance optimization after initial benchmarks)
+
+✅ **Testing Integration:** Continuous testing throughout development caught errors early when fixes simpler
+
+**Challenges Encountered:**
+
+⚠️ **Schedule Pressure:** Final weeks (documentation phase) more time-intensive than anticipated; started report writing earlier would reduce stress
+
+⚠️ **Dependency Updates:** PyNaCl minor version update mid-project required testing compatibility; version pinning mitigated risk but highlights dependency management importance
+
+⚠️ **Testing Coverage:** Some edge cases discovered late; more comprehensive test case design upfront would catch issues earlier
+
+**Lessons Learned:**
+
+1. **Modular Design Essential:** Independent modules with clear interfaces dramatically simplified development and testing
+
+2. **Library Reliance Beneficial:** Using established cryptographic libraries saved enormous time and reduced security risk compared to custom implementations
+
+3. **Documentation Ongoing:** Writing documentation continuously (not deferring to end) produces better quality and reduces final phase workload
+
+4. **Performance Testing Early:** Initial performance characterization (Phase 2) helped identify that no major optimization needed; earlier testing could have saved optimization time allocation
+
+5. **Git Proficiency Valuable:** Strong version control skills prevented conflicts and enabled effective collaboration; time invested learning Git early in semester paid dividends
+
+**Applicability to Future Projects:**
+
+The iterative development approach with modular architecture suitable for similar projects:
+- Medium complexity (not trivial, not enterprise-scale)
+- Well-defined requirements with some flexibility
+- Team size 2-4 members
+- Timeline: 3-6 months
+- Academic or research context
+
+For larger teams or longer timelines, more formal agile practices (sprint planning, retrospectives) would be beneficial. For solo projects, simpler workflow sufficient.
+
+---
+
+
